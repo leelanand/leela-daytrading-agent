@@ -1,0 +1,5 @@
+anthropic
+alpaca-py
+yfinance
+finnhub-python
+python-dotenv

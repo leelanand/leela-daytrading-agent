@@ -1,0 +1,5 @@
+.env
+daytrades.db
+*.log
+__pycache__/
+*.pyc
