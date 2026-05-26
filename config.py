@@ -8,6 +8,8 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ALPACA_API_KEY    = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 FINNHUB_API_KEY   = os.getenv("FINNHUB_API_KEY")
+POLYGON_API_KEY   = os.getenv("POLYGON_API_KEY", "")     # optional secondary feed
+BENZINGA_API_KEY  = os.getenv("BENZINGA_API_KEY", "")    # optional fast news feed
 PAPER_TRADING     = os.getenv("PAPER_TRADING", "true").lower() == "true"
 
 ALPACA_BASE_URL = (
@@ -56,8 +58,19 @@ DB_PATH = Path(__file__).parent / "daytrades.db"
 # ── Market Regime ──────────────────────────────────────────────────────────────
 REGIME_CACHE_MINS  = 30          # re-detect every 30 min
 SPY_TREND_DAYS     = 3           # rolling days for SPY trend calculation
-TRADEABLE_REGIMES  = ["TRENDING_UP", "CHOPPY"]   # trading allowed in these
-# HIGH_VOL is allowed but dynamic sizing cuts size; TRENDING_DOWN + LOW_VOLUME blocked
+TRADEABLE_REGIMES  = ["TRENDING_UP", "CHOPPY", "LOW_VOLUME"]
+# HIGH_VOL allowed but dynamic sizing cuts size; TRENDING_DOWN blocked
+# LOW_VOLUME now triggers REDUCED_RISK mode instead of full abort — see below
+
+# ── LOW_VOLUME adaptive thresholds ─────────────────────────────────────────────
+# vol_ratio below ABORT → genuine liquidity collapse → NO_TRADE (full abort)
+# vol_ratio below 0.60 but above ABORT → LOW_VOLUME → REDUCED_RISK mode
+LOW_VOLUME_ABORT_RATIO  = 0.35   # below this = genuine collapse, abort trading
+LOW_VOLUME_MIN_SCORE    = 85     # higher conviction required vs normal MIN_SCORE_TO_TRADE
+LOW_VOLUME_MAX_TRADES   = 1      # cap new entries at 1 per scan cycle
+LOW_VOLUME_STOCK_RVOL   = 1.5    # stock must show ≥ this RVOL to trade
+LOW_VOLUME_EXCEPTIONAL_SCORE = 90     # score at/above this exempts from RVOL requirement
+LOW_VOLUME_EXCEPTIONAL_NEWS  = 65     # news impact at/above this exempts from RVOL requirement
 
 # ── Dynamic Sizing ─────────────────────────────────────────────────────────────
 MIN_POSITION_SIZE_PCT      = 0.10   # floor — never size below 10% of portfolio
@@ -132,6 +145,65 @@ THEME_MAP = {
     "mobility":   ["UBER", "LYFT"],
 }
 MAX_THEME_POSITIONS = 1   # max 1 open position per theme group
+
+# ── Secondary Market Data — Massive.com / Polygon.io ──────────────────────────
+# Data layer: Massive.com (primary) → Polygon.io (fallback) → None (skip, non-blocking)
+# Execution layer: Alpaca only.  Market intelligence: Massive/Polygon only.
+# Add MASSIVE_API_KEY and/or POLYGON_API_KEY to .env to enable.
+#
+# Massive.com REST: https://api.massive.com   (verify exact path against their docs)
+# Polygon.io REST:  https://api.polygon.io    (documented)
+# Preferred provider is used for both REST and WebSocket.
+MASSIVE_API_KEY   = os.getenv("MASSIVE_API_KEY", "")
+PREFERRED_PROVIDER = os.getenv("PREFERRED_PROVIDER", "polygon")  # "massive" | "polygon"
+
+# Provider REST base URLs
+MASSIVE_REST_BASE  = "https://api.massive.com"      # verify with Massive docs
+POLYGON_REST_BASE  = "https://api.polygon.io"
+
+# WebSocket streaming endpoints
+# Massive = Polygon rebranded. Massive keys authenticate on Polygon's WS infrastructure.
+# Stocks Starter plan: delayed endpoint only — AM (minute aggregates) confirmed working.
+# Real-time endpoint (socket.polygon.io) requires Stocks Advanced ($199/month).
+MASSIVE_WS_URL = "wss://delayed.polygon.io/stocks"
+POLYGON_WS_URL = "wss://socket.polygon.io/stocks"  # requires Stocks Advanced plan
+
+# WebSocket burst-streaming settings
+ENABLE_WS_STREAMING       = True
+WS_STREAM_DURATION_SECS   = 75    # AM events fire once/min — 75s ensures at least one is caught
+WS_RECONNECT_DELAY_SECS   = 3     # seconds between reconnect attempts
+WS_MAX_RECONNECT          = 5     # max reconnect attempts per burst session
+WS_CACHE_FILE             = Path(__file__).parent / "ws_cache.json"
+
+# Cross-provider quote validation thresholds
+QUOTE_PRICE_MAX_DIFF_PCT   = 0.25   # reject if bid/ask midpoints differ >0.25%
+QUOTE_SPREAD_MAX_DIFF_PCT  = 0.15   # reject if spread widths differ >0.15%
+QUOTE_VOLUME_MAX_DIFF_PCT  = 25.0   # log (not reject) if day volumes differ >25%
+QUOTE_MAX_STALENESS_SECS   = 30     # reject secondary quote older than 30 seconds
+
+# Intraday quality thresholds (used by massive_feed.get_intraday_quality)
+RVOL_STRONG_THRESHOLD      = 2.0   # RVOL >= this = strong participation
+RVOL_MIN_THRESHOLD         = 1.0   # RVOL < this = low participation (warn)
+VWAP_FAR_THRESHOLD_PCT     = 3.0   # price > this % from VWAP = potential exhaustion
+SPREAD_WIDEN_THRESHOLD_PCT = 50.0  # spread widened > this % vs baseline = liquidity concern
+MIN_INTRADAY_QUALITY_SCORE = 40    # trades below this quality score are rejected
+
+# ── News Feed ──────────────────────────────────────────────────────────────────
+NEWS_LOOKBACK_MINS              = 120   # fetch news from the past 2 hours
+NEWS_DEDUP_SIMILARITY_THRESHOLD = 0.55  # Jaccard similarity above which headlines are dupes
+NEWS_MIN_IMPACT_SCORE           = 15    # suppress news below this in analyst prompt
+NEWS_MAX_AGE_MINS               = 120   # news older than this is considered stale
+
+# ── Event Risk ─────────────────────────────────────────────────────────────────
+BLOCK_ON_EARNINGS_WITHIN_DAYS = 1   # hard-block if earnings within 1 calendar day
+EARNINGS_RISK_WITHIN_DAYS     = 3   # warn-only window for upcoming earnings
+
+# ── Feed Health ────────────────────────────────────────────────────────────────
+FEED_HEALTH_FILE             = Path(__file__).parent / "feed_health.json"
+FEED_LOG_FILE                = Path(__file__).parent / "feed_log.jsonl"
+FEED_QUALITY_FILE            = Path(__file__).parent / "feed_quality.json"
+FEED_HEALTH_STALE_QUOTE_SECS = 60    # Alpaca quote age threshold for staleness alert
+FEED_HEALTH_SPIKE_PCT        = 5.0   # intraday move that triggers abnormal-spike flag
 
 # ── Watchlist ──────────────────────────────────────────────────────────────────
 WATCHLIST = [

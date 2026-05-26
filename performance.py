@@ -176,12 +176,12 @@ def generate_daily_performance() -> dict:
         "rejections":          rejections,
         "time_windows":        window_stats,
         f"rolling_{lb}d": {
-            "trades":        rolling["trades"],
-            "win_rate":      rolling["win_rate"],
-            "profit_factor": rolling["profit_factor"],
-            "expectancy":    rolling["expectancy"],
-            "avg_win":       rolling["avg_win"],
-            "avg_loss":      rolling["avg_loss"],
+            "trades":        rolling.get("trades", 0),
+            "win_rate":      rolling.get("win_rate", 0.0),
+            "profit_factor": rolling.get("profit_factor", 0.0),
+            "expectancy":    rolling.get("expectancy", 0.0),
+            "avg_win":       rolling.get("avg_win", 0.0),
+            "avg_loss":      rolling.get("avg_loss", 0.0),
         },
     }
 
@@ -202,7 +202,7 @@ def print_performance_report(perf: dict):
     print(f"  Today   : {perf['trades']} trades  {perf['wins']}W / {perf['losses']}L  "
           f"WR {perf['win_rate']:.0%}")
     print(f"  P&L     : ${perf['total_pnl']:+.2f}  |  "
-          f"Avg Win ${perf['avg_win']:+.2f}  |  Avg Loss −${perf['avg_loss']:.2f}")
+          f"Avg Win ${perf['avg_win']:+.2f}  |  Avg Loss -${perf['avg_loss']:.2f}")
     print(f"  PF      : {perf['profit_factor']:.2f}  "
           f"Expectancy ${perf['expectancy']:+.2f}/trade  "
           f"MaxDD ${perf['max_drawdown']:.2f}")
@@ -215,7 +215,7 @@ def print_performance_report(perf: dict):
               f"PF: {r.get('profit_factor', 0):.2f}   "
               f"Expectancy: ${r.get('expectancy', 0):+.2f}/trade")
         print(f"  Avg Win  : ${r.get('avg_win', 0):+.2f}   "
-              f"Avg Loss: −${r.get('avg_loss', 0):.2f}   "
+              f"Avg Loss: -${r.get('avg_loss', 0):.2f}   "
               f"Trades: {r.get('trades', 0)}")
 
     if perf.get("time_windows"):

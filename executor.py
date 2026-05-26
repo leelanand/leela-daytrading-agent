@@ -38,7 +38,7 @@ def place_bracket_order(
             stop_loss=StopLossRequest(stop_price=stop),
         )
         order_type = "limit"
-        stop_label = f"−{sp:.1%}"
+        stop_label = f"-{sp:.1%}"
         print(f"   [ORDER] {symbol} x{shares} limit @${limit_price} | stop ${stop} ({stop_label}) | target ${target}")
     else:
         limit_price = price

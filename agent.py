@@ -13,8 +13,13 @@ Modes:
   --status      any time   — current positions and P&L
 """
 import argparse
+import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
+# Ensure UTF-8 output on Windows so Unicode symbols in print() don't crash
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from alpaca.trading.client import TradingClient
 from config import (
@@ -22,6 +27,8 @@ from config import (
     MIN_SCORE_TO_TRADE, WATCHLIST_SCORE, KILL_SWITCH,
     BLOCK_MIDDAY, BLOCK_MIDDAY_START, BLOCK_MIDDAY_END,
     MIN_MOMENTUM_TO_TRADE,
+    LOW_VOLUME_MIN_SCORE, LOW_VOLUME_MAX_TRADES,
+    LOW_VOLUME_STOCK_RVOL, LOW_VOLUME_EXCEPTIONAL_SCORE, LOW_VOLUME_EXCEPTIONAL_NEWS,
 )
 from scanner import scan_for_candidates
 from analyst import analyse_candidates
@@ -29,7 +36,7 @@ from executor import place_bracket_order, close_all_positions
 from risk import can_trade, check_candidate_risk, position_size, open_symbols
 from logger import init_db, log_audit, log_paper_trade, today_summary, all_time_summary
 from candidates import save_candidates, load_valid_candidates
-from regime import detect_regime, is_tradeable
+from regime import detect_regime, is_tradeable, get_regime_context, LOW_VOLUME
 from sizing import dynamic_position_size
 from exits import record_entry, monitor_positions
 from momentum import analyse_momentum, STRENGTHENING, STABLE
@@ -40,6 +47,15 @@ from performance import (
     should_pause_trading, get_recent_performance,
     get_weak_windows, get_expectancy_by_dimension,
 )
+from feed_health import run_health_check, log_health_event
+from polygon_feed import validate_cross_provider, detect_alpaca_subscription
+from massive_feed import (
+    stream_quotes_burst, get_intraday_quality,
+    active_providers,
+)
+from feed_logger import log_trade_feed_inputs, log_feed_event, \
+    generate_feed_quality_report, print_feed_quality_report
+from event_risk import check_earnings, check_halt
 
 ET = ZoneInfo("America/New_York")
 
@@ -97,6 +113,24 @@ def _status():
         print("\n  No open positions.")
 
 
+def _run_feed_health(paper_mode: bool) -> tuple[bool, bool]:
+    """
+    Run feed health check. Print summary. Return (healthy, forced_paper).
+    forced_paper=True means live trading was downgraded to paper.
+    """
+    healthy, issues, status = run_health_check()
+    sub = detect_alpaca_subscription()
+    if sub != "SIP":
+        print(f"   [FEED] Alpaca subscription: {sub} (no real-time SIP data)")
+    if issues:
+        for issue in issues:
+            print(f"   [FEED HEALTH] {issue}")
+    if not healthy and not paper_mode:
+        print(f"   [FEED HEALTH] Critical failure — downgrading to PAPER mode")
+        return False, True
+    return healthy, False
+
+
 def _current_window() -> str:
     """Return the named trading window for the current ET time."""
     now  = datetime.now(ET)
@@ -114,6 +148,9 @@ def _prescan():
         print("   Market is closed — skipping prescan.")
         return
 
+    # Feed health check (non-blocking for prescan — we never place orders here)
+    _run_feed_health(paper_mode=True)
+
     # Regime check
     regime, regime_reason = detect_regime()
     print(f"   Regime : {regime} — {regime_reason}")
@@ -123,6 +160,25 @@ def _prescan():
         print(f"   [NO TRADE] Regime {regime!r} not in tradeable set — prescan aborted.")
         log_audit("PRESCAN_SKIPPED", details={"reason": f"regime={regime}"})
         return
+
+    low_vol_mode = (regime == LOW_VOLUME)
+    if low_vol_mode:
+        ctx = get_regime_context()
+        print(f"   [LOW_VOLUME] REDUCED_RISK mode active — restrictions at scan time:")
+        print(f"     score >= {LOW_VOLUME_MIN_SCORE}  |  stock RVOL >= {LOW_VOLUME_STOCK_RVOL}x  "
+              f"|  max {LOW_VOLUME_MAX_TRADES} trade(s)  |  size -50%")
+        print(f"     vix={ctx.get('vix','?')}  vol_10d={ctx.get('vol_ratio_10d','?')}  "
+              f"vol_weekday={ctx.get('vol_ratio_weekday','?')}  "
+              f"baseline={ctx.get('vol_baseline','?')}")
+        log_audit("LOW_VOLUME_MODE", details={
+            "restrictions": {
+                "min_score":   LOW_VOLUME_MIN_SCORE,
+                "min_rvol":    LOW_VOLUME_STOCK_RVOL,
+                "max_trades":  LOW_VOLUME_MAX_TRADES,
+                "size_cut":    "50%",
+            },
+            **ctx,
+        })
 
     # Intraday alignment check
     alignment, align_reason = get_intraday_alignment()
@@ -144,7 +200,7 @@ def _prescan():
     watchlist = [p for p in scored if p.get("watchlist")]
 
     print(f"\n   PRESCAN RESULTS (regime: {regime}):")
-    print(f"   Tradeable (score ≥ {MIN_SCORE_TO_TRADE}): {len(tradeable)}")
+    print(f"   Tradeable (score >= {MIN_SCORE_TO_TRADE}): {len(tradeable)}")
     for p in tradeable:
         print(f"     {p['symbol']:6s} score={p['score']:3d} | {p['reasoning'][:72]}")
     print(f"   Watchlist (score {WATCHLIST_SCORE}–{MIN_SCORE_TO_TRADE - 1}): {len(watchlist)}")
@@ -176,6 +232,11 @@ def _scan_and_trade(paper_mode: bool = False):
         print("   Market is closed — skipping scan.")
         return
 
+    # Feed health check — may force-downgrade live session to paper
+    _, forced_paper = _run_feed_health(paper_mode)
+    if forced_paper:
+        paper_mode = True
+
     # Midday block
     if _in_midday_block():
         now = datetime.now(ET).strftime("%H:%M")
@@ -198,6 +259,18 @@ def _scan_and_trade(paper_mode: bool = False):
         print(f"   [NO TRADE] Regime {regime!r} — scan aborted.")
         log_audit("SCAN_SKIPPED", details={"reason": f"regime={regime}"})
         return
+
+    low_vol_mode = (regime == LOW_VOLUME)
+    if low_vol_mode:
+        ctx = get_regime_context()
+        print(f"   [LOW_VOLUME] REDUCED_RISK: score>={LOW_VOLUME_MIN_SCORE}  "
+              f"RVOL>={LOW_VOLUME_STOCK_RVOL}x  max {LOW_VOLUME_MAX_TRADES} trade  size-50%")
+        log_audit("LOW_VOLUME_MODE", details={"restrictions": {
+            "min_score":  LOW_VOLUME_MIN_SCORE,
+            "min_rvol":   LOW_VOLUME_STOCK_RVOL,
+            "max_trades": LOW_VOLUME_MAX_TRADES,
+            "size_cut":   "50%",
+        }, **ctx})
 
     # Intraday alignment check (real-time SPY direction)
     alignment, align_reason = get_intraday_alignment()
@@ -225,6 +298,16 @@ def _scan_and_trade(paper_mode: bool = False):
     held      = open_symbols()
 
     prescan = load_valid_candidates()
+
+    # Pre-warm WS cache with a burst streaming session for candidate symbols
+    # before entering the per-symbol loop (non-blocking if no key configured)
+    _candidate_symbols = [
+        c["symbol"] for c in (prescan or []) if c.get("tradeable")
+    ]
+    if _candidate_symbols and active_providers():
+        print(f"   Streaming quotes for {len(_candidate_symbols)} candidate(s) "
+              f"({active_providers()[0]})...")
+        stream_quotes_burst(_candidate_symbols)
     if prescan:
         candidates = [c for c in prescan if c.get("tradeable") and c["symbol"] not in held]
         if not candidates:
@@ -249,10 +332,17 @@ def _scan_and_trade(paper_mode: bool = False):
                 p["regime"] = regime
                 candidates.append(p)
 
+    trades_this_scan = 0
     for pick in candidates:
         ok, portfolio, reason = can_trade()
         if not ok:
             print(f"   [RISK] {reason} — stopping.")
+            break
+
+        # LOW_VOLUME cap — stop after max allowed trades for this scan cycle
+        if low_vol_mode and trades_this_scan >= LOW_VOLUME_MAX_TRADES:
+            print(f"   [LOW_VOLUME] {LOW_VOLUME_MAX_TRADES} trade cap reached — stopping scan.")
+            log_audit("SCAN_CAPPED", details={"reason": "low_volume_max_trades"})
             break
 
         symbol        = pick["symbol"]
@@ -262,6 +352,35 @@ def _scan_and_trade(paper_mode: bool = False):
         vol_pct       = pick.get("volatility_pct", 0.0)
         spread_pct    = pick.get("spread_pct", 0.0)
         setup_type    = pick.get("setup_type", "unknown")
+
+        # Event risk: hard-block on imminent earnings or halt
+        earn_block, earn_desc = check_earnings(symbol)
+        if earn_block:
+            print(f"   [SKIP] {symbol}: event risk — {earn_desc}")
+            log_audit("TRADE_REJECTED", symbol, {
+                "score": score, "reason": f"earnings_block: {earn_desc}",
+                "setup_type": setup_type,
+            })
+            continue
+        halted, halt_desc = check_halt(symbol)
+        if halted:
+            print(f"   [SKIP] {symbol}: {halt_desc}")
+            log_audit("TRADE_REJECTED", symbol, {
+                "score": score, "reason": f"halt: {halt_desc}",
+                "setup_type": setup_type,
+            })
+            continue
+
+        # LOW_VOLUME confidence gate — require higher score than normal
+        if low_vol_mode and score < LOW_VOLUME_MIN_SCORE:
+            print(f"   [SKIP] {symbol}: LOW_VOLUME mode requires score>={LOW_VOLUME_MIN_SCORE} "
+                  f"(got {score})")
+            log_audit("TRADE_REJECTED", symbol, {
+                "score": score,
+                "reason": f"low_volume_min_score: {score}<{LOW_VOLUME_MIN_SCORE}",
+                "setup_type": setup_type,
+            })
+            continue
 
         # Risk gate
         risk_ok, risk_reason = check_candidate_risk(pick, portfolio, prescan_price)
@@ -290,6 +409,69 @@ def _scan_and_trade(paper_mode: bool = False):
         stop_pct = suggested_stop_pct(mom["strength"], regime)
         cost     = shares * price
 
+        # Intraday quality gate — RVOL, VWAP distance, spread stability, exhaustion
+        now_et       = datetime.now(ET)
+        mins_elapsed = max(1, (now_et.hour * 60 + now_et.minute) - (9 * 60 + 30))
+        iq = get_intraday_quality(
+            symbol, price, spread_pct,
+            volume=pick.get("today_volume", 0),
+            avg_daily_volume=0,   # 0 = RVOL skipped (scanner has it via yfinance)
+            mins_elapsed=mins_elapsed,
+            baseline_spread=spread_pct,
+        )
+        print(f"   Quality {symbol}: score={iq['score']}/100  {iq['reason']}  [{iq['data_source']}]")
+        if not iq["ok"]:
+            print(f"   [SKIP] {symbol}: intraday quality {iq['score']}/100 — {iq['reason']}")
+            log_feed_event("TRADE_REJECTED_DATA", {
+                "symbol": symbol,
+                "reason": f"quality_score={iq['score']}: {iq['reason']}",
+            })
+            log_audit("TRADE_REJECTED", symbol, {
+                "score": score,
+                "reason": f"intraday_quality: {iq['reason']}",
+                "setup_type": setup_type,
+            })
+            continue
+
+        # LOW_VOLUME stock-level RVOL gate
+        # Exceptional candidate (very high score + strong news) bypasses RVOL check
+        if low_vol_mode and iq["rvol"] > 0:
+            top_news_impact = pick.get("_top_news_impact", 0)
+            is_exceptional  = (
+                score >= LOW_VOLUME_EXCEPTIONAL_SCORE
+                or top_news_impact >= LOW_VOLUME_EXCEPTIONAL_NEWS
+            )
+            if not is_exceptional and iq["rvol"] < LOW_VOLUME_STOCK_RVOL:
+                print(f"   [SKIP] {symbol}: LOW_VOLUME stock RVOL {iq['rvol']:.1f}x "
+                      f"< {LOW_VOLUME_STOCK_RVOL}x required (score={score}, "
+                      f"news_impact={top_news_impact})")
+                log_audit("TRADE_REJECTED", symbol, {
+                    "score": score,
+                    "reason": (f"low_volume_stock_rvol: {iq['rvol']:.1f}x"
+                               f"<{LOW_VOLUME_STOCK_RVOL}x"),
+                    "setup_type": setup_type,
+                })
+                continue
+            if is_exceptional and iq["rvol"] < LOW_VOLUME_STOCK_RVOL:
+                print(f"   [LOW_VOLUME] {symbol}: RVOL {iq['rvol']:.1f}x below threshold "
+                      f"but EXCEPTIONAL candidate (score={score}, "
+                      f"news={top_news_impact}) — allowing")
+
+        # Cross-provider quote validation — compare Alpaca vs Massive/Polygon before executing
+        quote_ok, quote_reason, poly_quote = validate_cross_provider(
+            symbol, price, spread_pct, pick.get("today_volume", 0)
+        )
+        if not quote_ok:
+            print(f"   [DATA QUALITY] {symbol}: {quote_reason}")
+            log_feed_event("TRADE_REJECTED_DATA", {"symbol": symbol, "reason": quote_reason})
+            log_audit("TRADE_REJECTED", symbol, {
+                "score": score, "reason": f"data_quality: {quote_reason}",
+                "setup_type": setup_type,
+            })
+            continue
+        if "volume_divergence" in quote_reason:
+            log_feed_event("VOLUME_DIVERGENCE", {"symbol": symbol, "detail": quote_reason})
+
         audit_details = {
             "score":      score,
             "shares":     shares,
@@ -303,6 +485,31 @@ def _scan_and_trade(paper_mode: bool = False):
             "setup_type": setup_type,
             "stop_pct":   round(stop_pct, 4),
         }
+
+        # Log all feed inputs used for this decision
+        data_sources = ["alpaca", "finnhub"]
+        if poly_quote:
+            data_sources.append(poly_quote.get("provider", "secondary"))
+        if iq["data_source"] not in ("alpaca_only", "none"):
+            if iq.get("provider") and iq["provider"] not in data_sources:
+                data_sources.append(iq["provider"])
+        log_trade_feed_inputs(symbol, {
+            "score":                 score,
+            "regime":                regime,
+            "alignment":             alignment,
+            "momentum":              mom["strength"],
+            "alpaca_price":          price,
+            "alpaca_spread_pct":     spread_pct,
+            "secondary_quote":       poly_quote,
+            "quote_ok":              quote_ok,
+            "quote_validation_done": True,
+            "intraday_quality":      iq,
+            "news_count":            len(pick.get("news", [])),
+            "top_news_impact":       pick.get("_top_news_impact", 0),
+            "setup_type":            setup_type,
+            "data_sources":          data_sources,
+            "paper_mode":            paper_mode,
+        })
 
         if paper_mode:
             print(f"   [PAPER] WOULD BUY {symbol}  score={score}/100  {size_note}  "
@@ -320,6 +527,8 @@ def _scan_and_trade(paper_mode: bool = False):
             )
             record_entry(symbol, price)
             log_audit("ORDER_PLACED", symbol, audit_details)
+
+        trades_this_scan += 1
 
 
 def _report():
@@ -365,6 +574,7 @@ if __name__ == "__main__":
     parser.add_argument("--close",       action="store_true", help="Force-close all positions (3:45pm ET)")
     parser.add_argument("--report",      action="store_true", help="Basic P&L report (4:00pm ET)")
     parser.add_argument("--performance", action="store_true", help="Full analytics dashboard (4:15pm ET)")
+    parser.add_argument("--feedreport",  action="store_true", help="Feed quality report — provider health, mismatches, rejections")
     parser.add_argument("--status",      action="store_true", help="Current positions and P&L")
     args = parser.parse_args()
 
@@ -441,6 +651,14 @@ if __name__ == "__main__":
         _header("PERFORMANCE DASHBOARD")
         perf = generate_daily_performance()
         print_performance_report(perf)
+        # Append feed quality summary after performance report
+        feed_rpt = generate_feed_quality_report()
+        print_feed_quality_report(feed_rpt)
+
+    elif args.feedreport:
+        _header("FEED QUALITY REPORT")
+        feed_rpt = generate_feed_quality_report()
+        print_feed_quality_report(feed_rpt)
 
     elif args.status:
         _header("STATUS")
@@ -449,4 +667,4 @@ if __name__ == "__main__":
     else:
         print("Usage: python agent.py "
               "--prescan | --scan | --paper | --monitor | "
-              "--close | --report | --performance | --status")
+              "--close | --report | --performance | --feedreport | --status")

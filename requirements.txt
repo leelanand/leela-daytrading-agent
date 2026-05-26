@@ -4,3 +4,5 @@ yfinance
 finnhub-python
 python-dotenv
 numpy
+requests
+websocket-client

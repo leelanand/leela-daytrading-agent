@@ -89,7 +89,7 @@ def check_exits() -> list[str]:
                 age_mins = (datetime.now(timezone.utc) - entered).total_seconds() / 60
                 if age_mins <= RAPID_INVALIDATION_MINS and current < entry * 0.995:
                     loss_pct = (entry - current) / entry * 100
-                    reason   = (f"rapid_invalidation: −{loss_pct:.2f}% in {age_mins:.0f} min "
+                    reason   = (f"rapid_invalidation: -{loss_pct:.2f}% in {age_mins:.0f} min "
                                 f"— momentum thesis failed at entry")
 
         # 4. Time-based exit — no movement after TIME_EXIT_MINS

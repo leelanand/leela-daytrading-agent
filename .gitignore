@@ -3,3 +3,17 @@ daytrades.db
 *.log
 __pycache__/
 *.pyc
+
+# Runtime state / cache — regenerated each session
+feed_health.json
+feed_log.jsonl
+feed_quality.json
+performance.json
+performance_history.jsonl
+regime_cache.json
+ws_cache.json
+candidates.json
+exit_state.json
+intraday_cache.json
+paper_trades.json
+audit.log

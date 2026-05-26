@@ -33,35 +33,35 @@ def dynamic_position_size(
         score_m = 1.0
     else:
         score_m = 0.75
-        notes.append(f"score {score} −25%")
+        notes.append(f"score {score} -25%")
 
     # ── Volatility modifier ───────────────────────────────────────────────────
     if volatility_pct > HIGH_VOL_THRESHOLD:      # > 3.0%
         vol_m = 0.70
-        notes.append(f"vol {volatility_pct:.1f}% −30%")
+        notes.append(f"vol {volatility_pct:.1f}% -30%")
     elif volatility_pct > 2.0:
         vol_m = 0.85
-        notes.append(f"vol {volatility_pct:.1f}% −15%")
+        notes.append(f"vol {volatility_pct:.1f}% -15%")
     else:
         vol_m = 1.0
 
     # ── Spread modifier ───────────────────────────────────────────────────────
     if spread_pct > 0.15:
         spread_m = 0.85
-        notes.append(f"spread {spread_pct:.2f}% −15%")
+        notes.append(f"spread {spread_pct:.2f}% -15%")
     else:
         spread_m = 1.0
 
     # ── Regime modifier ───────────────────────────────────────────────────────
-    regime_cuts = {"HIGH_VOL": 0.75, "CHOPPY": 0.85, "TRENDING_DOWN": 0.50, "LOW_VOLUME": 0.80}
+    regime_cuts = {"HIGH_VOL": 0.75, "CHOPPY": 0.85, "TRENDING_DOWN": 0.50, "LOW_VOLUME": 0.50}
     regime_m    = regime_cuts.get(regime, 1.0)
     if regime_m < 1.0:
-        notes.append(f"{regime} −{int((1 - regime_m) * 100)}%")
+        notes.append(f"{regime} -{int((1 - regime_m) * 100)}%")
 
     # ── Recent performance modifier ───────────────────────────────────────────
     if recent_win_rate < 0.40:
         perf_m = 0.80
-        notes.append(f"WR {recent_win_rate:.0%} −20%")
+        notes.append(f"WR {recent_win_rate:.0%} -20%")
     elif recent_win_rate > 0.65:
         perf_m = 1.10
         notes.append(f"WR {recent_win_rate:.0%} +10%")
