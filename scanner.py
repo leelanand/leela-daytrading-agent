@@ -1,12 +1,16 @@
 """
 Scans watchlist for intraday momentum — gap-ups, volume spikes, news catalysts.
+Returns enriched candidates with spread, volatility, sector, and bid/ask data.
 """
 import finnhub
 import yfinance as yf
 from datetime import date, timedelta
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockSnapshotRequest
-from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, FINNHUB_API_KEY, WATCHLIST, MIN_GAP_PCT, MIN_REL_VOLUME
+from config import (
+    ALPACA_API_KEY, ALPACA_SECRET_KEY, FINNHUB_API_KEY, WATCHLIST,
+    MIN_GAP_PCT, MIN_REL_VOLUME, MIN_VOLUME_DAILY, MAX_SPREAD_PCT,
+)
 
 
 def _snapshots(symbols: list) -> dict:
@@ -25,12 +29,20 @@ def _avg_volume(symbol: str, days: int = 10) -> float | None:
         return None
 
 
+def _sector(symbol: str) -> str:
+    try:
+        info = yf.Ticker(symbol).info
+        return info.get("sector", "Unknown") or "Unknown"
+    except Exception:
+        return "Unknown"
+
+
 def _news(symbol: str) -> list[str]:
     try:
-        fc = finnhub.Client(api_key=FINNHUB_API_KEY)
+        fc        = finnhub.Client(api_key=FINNHUB_API_KEY)
         today     = date.today().isoformat()
         yesterday = (date.today() - timedelta(days=1)).isoformat()
-        items = fc.company_news(symbol, _from=yesterday, to=today)
+        items     = fc.company_news(symbol, _from=yesterday, to=today)
         return [n["headline"] for n in items[:3]]
     except Exception:
         return []
@@ -39,10 +51,11 @@ def _news(symbol: str) -> list[str]:
 def scan_for_candidates() -> list[dict]:
     """
     Return top momentum candidates sorted by gap * rel_volume.
-    Each dict: symbol, price, prev_close, gap_pct, rel_volume, today_volume, news.
+    Each dict: symbol, price, prev_close, gap_pct, rel_volume, today_volume,
+               bid, ask, spread_pct, volatility_pct, sector, news, has_news.
     """
     print(f"   Scanning {len(WATCHLIST)} symbols...")
-    snaps = _snapshots(WATCHLIST)
+    snaps      = _snapshots(WATCHLIST)
     candidates = []
 
     for symbol in WATCHLIST:
@@ -55,31 +68,52 @@ def scan_for_candidates() -> list[dict]:
             today_vol  = int(snap.daily_bar.volume) if snap.daily_bar else 0
 
             gap_pct = (price - prev_close) / prev_close * 100
-
-            # Only long / gap-up trades
             if gap_pct < MIN_GAP_PCT:
+                continue
+
+            if today_vol < MIN_VOLUME_DAILY:
                 continue
 
             avg_vol    = _avg_volume(symbol)
             rel_volume = today_vol / avg_vol if avg_vol and avg_vol > 0 else 0
-
             if rel_volume < MIN_REL_VOLUME:
                 continue
 
-            news = _news(symbol)
+            # Bid/ask spread
+            bid        = float(snap.latest_quote.bid_price) if snap.latest_quote else price * 0.999
+            ask        = float(snap.latest_quote.ask_price) if snap.latest_quote else price * 1.001
+            spread_pct = (ask - bid) / price * 100 if price > 0 else 99.0
+
+            if spread_pct > MAX_SPREAD_PCT:
+                continue
+
+            # Intraday volatility (daily range)
+            day_high       = float(snap.daily_bar.high) if snap.daily_bar else price
+            day_low        = float(snap.daily_bar.low)  if snap.daily_bar else price
+            volatility_pct = (day_high - day_low) / price * 100 if price > 0 else 0.0
+
+            sector = _sector(symbol)
+            news   = _news(symbol)
 
             candidates.append({
-                "symbol":      symbol,
-                "price":       round(price, 2),
-                "prev_close":  round(prev_close, 2),
-                "gap_pct":     round(gap_pct, 2),
-                "rel_volume":  round(rel_volume, 2),
-                "today_volume": today_vol,
-                "news":        news,
+                "symbol":         symbol,
+                "price":          round(price, 2),
+                "prev_close":     round(prev_close, 2),
+                "gap_pct":        round(gap_pct, 2),
+                "rel_volume":     round(rel_volume, 2),
+                "today_volume":   today_vol,
+                "bid":            round(bid, 2),
+                "ask":            round(ask, 2),
+                "spread_pct":     round(spread_pct, 3),
+                "volatility_pct": round(volatility_pct, 2),
+                "sector":         sector,
+                "news":           news,
+                "has_news":       len(news) > 0,
             })
         except Exception:
             continue
 
     candidates.sort(key=lambda x: x["gap_pct"] * x["rel_volume"], reverse=True)
-    print(f"   Found {len(candidates)} momentum candidates (gap >{MIN_GAP_PCT}%, vol >{MIN_REL_VOLUME}x)")
+    print(f"   Found {len(candidates)} momentum candidates "
+          f"(gap >{MIN_GAP_PCT}%, vol >{MIN_REL_VOLUME}x, spread <{MAX_SPREAD_PCT}%)")
     return candidates[:10]

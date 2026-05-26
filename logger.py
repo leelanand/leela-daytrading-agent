@@ -1,7 +1,8 @@
-"""SQLite trade log."""
+"""SQLite trade log and full audit trail."""
 import sqlite3
-from datetime import date
-from config import DB_PATH
+import json
+from datetime import date, datetime
+from config import DB_PATH, AUDIT_LOG_FILE
 
 
 def init_db():
@@ -20,6 +21,29 @@ def init_db():
             ts         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            date    TEXT,
+            ts      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            action  TEXT,
+            symbol  TEXT,
+            details TEXT
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS paper_trades (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            date      TEXT,
+            ts        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            symbol    TEXT,
+            shares    INTEGER,
+            price     REAL,
+            side      TEXT,
+            score     INTEGER,
+            reasoning TEXT
+        )
+    """)
     con.commit()
     con.close()
 
@@ -34,6 +58,51 @@ def log_trade(symbol: str, shares: int, entry: float, exit_price: float, reason:
     )
     con.commit()
     con.close()
+
+
+def log_audit(action: str, symbol: str = "", details: dict | None = None):
+    """Record every decision — trades placed, rejected, blocked, or simulated."""
+    details_str = json.dumps(details or {})
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "INSERT INTO audit_log (date,action,symbol,details) VALUES (?,?,?,?)",
+        (date.today().isoformat(), action, symbol, details_str),
+    )
+    con.commit()
+    con.close()
+
+    ts   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] {action:<22} {symbol:<6} {details_str}\n"
+    AUDIT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(AUDIT_LOG_FILE, "a") as f:
+        f.write(line)
+
+
+def log_paper_trade(symbol: str, shares: int, price: float, side: str, score: int, reasoning: str):
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "INSERT INTO paper_trades (date,symbol,shares,price,side,score,reasoning) VALUES (?,?,?,?,?,?,?)",
+        (date.today().isoformat(), symbol, shares, price, side, score, reasoning),
+    )
+    con.commit()
+    con.close()
+
+
+def today_audit() -> list[dict]:
+    con  = sqlite3.connect(DB_PATH)
+    rows = con.execute(
+        "SELECT action,symbol,details FROM audit_log WHERE date=?",
+        (date.today().isoformat(),),
+    ).fetchall()
+    con.close()
+    result = []
+    for action, symbol, details_str in rows:
+        try:
+            details = json.loads(details_str)
+        except Exception:
+            details = {}
+        result.append({"action": action, "symbol": symbol, "details": details})
+    return result
 
 
 def today_summary() -> list[tuple]:

@@ -15,30 +15,50 @@ ALPACA_BASE_URL = (
     else "https://api.alpaca.markets"
 )
 
-# Risk parameters
-MAX_POSITIONS      = 3      # Max simultaneous open positions
-POSITION_SIZE_PCT  = 0.20   # 20% of portfolio per trade (~$40k on $200k)
-STOP_LOSS_PCT      = 0.015  # 1.5% stop loss
-TAKE_PROFIT_PCT    = 0.030  # 3.0% take profit (2:1 risk/reward)
-DAILY_LOSS_LIMIT   = 0.03   # Stop trading if down 3% on the day
-MIN_CONFIDENCE     = 8      # Min Claude score (1-10) to place a trade
-MIN_GAP_PCT        = 1.5    # Minimum gap from prev close to consider
-MIN_REL_VOLUME     = 1.3    # Minimum relative volume vs 10-day average
-FORCE_CLOSE_HOUR   = 15     # Force-close all positions at...
-FORCE_CLOSE_MIN    = 45     # ...3:45pm ET — no overnight risk
+# ── Execution ──────────────────────────────────────────────────────────────────
+MAX_POSITIONS     = 3
+POSITION_SIZE_PCT = 0.20
+STOP_LOSS_PCT     = 0.015
+TAKE_PROFIT_PCT   = 0.030
+FORCE_CLOSE_HOUR  = 15
+FORCE_CLOSE_MIN   = 45
 
+USE_LIMIT_ORDERS  = True       # limit orders preferred over market
+LIMIT_OFFSET_PCT  = 0.001      # buy limit = price * (1 + LIMIT_OFFSET_PCT)
+STAGED_ENTRY      = False      # True = 50% initial, 50% on confirmation
+
+# ── Scoring thresholds ─────────────────────────────────────────────────────────
+MIN_SCORE_TO_TRADE = 78        # 0-100: minimum score to place a real order
+WATCHLIST_SCORE    = 60        # 0-100: monitor but don't trade yet
+
+# ── Risk controls ──────────────────────────────────────────────────────────────
+DAILY_LOSS_LIMIT    = 0.03     # stop trading if down 3% on the day
+MAX_TRADES_PER_DAY  = 5        # max new entries per day
+MAX_SECTOR_EXPOSURE = 0.40     # max 40% of portfolio in one sector
+MAX_SPREAD_PCT      = 0.30     # max bid/ask spread as % of price
+MIN_VOLUME_DAILY    = 300_000  # minimum daily share volume
+GAP_TOLERANCE_PCT   = 2.5      # max price drift from prescan price (%)
+KILL_SWITCH         = False    # set True to disable ALL trading immediately
+
+# ── Scanner filters ────────────────────────────────────────────────────────────
+MIN_GAP_PCT     = 1.5
+MIN_REL_VOLUME  = 1.3
+
+# ── Candidate storage ──────────────────────────────────────────────────────────
+CANDIDATE_EXPIRY_MINS = 90     # prescan candidates expire after 90 min
+CANDIDATES_FILE       = Path(__file__).parent / "candidates.json"
+PAPER_TRADES_FILE     = Path(__file__).parent / "paper_trades.json"
+AUDIT_LOG_FILE        = Path(__file__).parent / "audit.log"
+
+# ── Database ───────────────────────────────────────────────────────────────────
 DB_PATH = Path(__file__).parent / "daytrades.db"
 
-# High-liquidity watchlist — tight spreads, high volume, moves well intraday
+# ── Watchlist ──────────────────────────────────────────────────────────────────
 WATCHLIST = [
-    # Mega cap — most liquid
     "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "META", "GOOGL", "AMZN", "NFLX", "AVGO",
-    # High-beta momentum
     "COIN", "MARA", "PLTR", "SOFI", "HOOD", "RIVN", "LCID",
-    # Semis / AI
     "SMCI", "MU", "QCOM", "INTC", "ARM", "MRVL",
-    # High-vol growth
     "DDOG", "ZS", "CRWD", "SNOW", "ROKU", "TTD", "UBER", "LYFT",
-    # ETFs — market direction / leverage
     "SPY", "QQQ", "SOXL", "TQQQ",
+    "GNRC",
 ]
