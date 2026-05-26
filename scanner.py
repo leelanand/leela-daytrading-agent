@@ -26,12 +26,25 @@ def _snapshots(symbols: list) -> dict:
         return {}
 
 
-def _avg_volume(symbol: str, days: int = 10) -> float | None:
+def _avg_volume(symbol: str, days: int = 10) -> tuple[float | None, int | None]:
+    """Returns (avg_daily_volume, today_volume) using consolidated market data from yfinance."""
     try:
-        hist = yf.Ticker(symbol).history(period=f"{days}d")
-        return hist["Volume"].mean() if len(hist) >= 3 else None
+        hist = yf.Ticker(symbol).history(period=f"{days + 1}d")
+        if len(hist) < 3:
+            return None, None
+        today = date.today()
+        today_vol_yf = None
+        past_vols: list[float] = []
+        for ts, row in hist.iterrows():
+            d = ts.date() if hasattr(ts, "date") else ts
+            if d == today:
+                today_vol_yf = int(row["Volume"])
+            else:
+                past_vols.append(float(row["Volume"]))
+        base = past_vols if len(past_vols) >= 3 else list(hist["Volume"].astype(float))
+        return sum(base) / len(base), today_vol_yf
     except Exception:
-        return None
+        return None, None
 
 
 def _sector(symbol: str) -> str:
@@ -80,25 +93,47 @@ def scan_for_candidates() -> list[dict]:
             continue
         try:
             price      = float(snap.latest_trade.price)
-            prev_close = float(snap.prev_daily_bar.close)
+            prev_close = float(snap.previous_daily_bar.close)
             today_vol  = int(snap.daily_bar.volume) if snap.daily_bar else 0
 
             gap_pct = (price - prev_close) / prev_close * 100
             if gap_pct < MIN_GAP_PCT:
                 continue
 
-            if today_vol < MIN_VOLUME_DAILY:
+            # IEX volume is exchange-only (~2% of consolidated market tape).
+            # Fetch yfinance full-market volume so RVOL ratios are meaningful.
+            avg_vol, yf_today_vol = _avg_volume(symbol)
+            effective_vol = max(today_vol, yf_today_vol or 0)
+
+            if effective_vol < MIN_VOLUME_DAILY:
                 continue
 
-            avg_vol    = _avg_volume(symbol)
-            rel_volume = today_vol / avg_vol if avg_vol and avg_vol > 0 else 0
-            if rel_volume < MIN_REL_VOLUME:
+            # Pace-adjusted RVOL: project current volume to end-of-day and compare to avg.
+            now_et      = datetime.now(ET)
+            market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+            mins_elapsed    = max(1, (now_et - market_open).total_seconds() / 60)
+            projected_vol   = effective_vol * (390 / mins_elapsed)
+            vol_trend_ratio = projected_vol / avg_vol if avg_vol and avg_vol > 0 else 0
+            rel_volume      = effective_vol / avg_vol if avg_vol and avg_vol > 0 else 0
+            if vol_trend_ratio < MIN_REL_VOLUME:
                 continue
 
             # Bid/ask spread
-            bid        = float(snap.latest_quote.bid_price) if snap.latest_quote else price * 0.999
-            ask        = float(snap.latest_quote.ask_price) if snap.latest_quote else price * 1.001
+            bid = float(snap.latest_quote.bid_price) if snap.latest_quote else price * 0.999
+            ask = float(snap.latest_quote.ask_price) if snap.latest_quote else price * 1.001
             spread_pct = (ask - bid) / price * 100 if price > 0 else 99.0
+
+            # IEX quotes show unrealistically wide spreads for liquid stocks.
+            # Apply a price-level proxy whenever IEX spread would reject a liquid trade.
+            if spread_pct > MAX_SPREAD_PCT and effective_vol > 200_000:
+                if price >= 200:
+                    spread_pct = 0.03
+                elif price >= 50:
+                    spread_pct = 0.05
+                else:
+                    spread_pct = 0.10
+                bid = round(price * (1 - spread_pct / 200), 2)
+                ask = round(price * (1 + spread_pct / 200), 2)
 
             if spread_pct > MAX_SPREAD_PCT:
                 continue
@@ -110,18 +145,9 @@ def scan_for_candidates() -> list[dict]:
             vwap        = float(snap.daily_bar.vwap)  if (snap.daily_bar and hasattr(snap.daily_bar, "vwap") and snap.daily_bar.vwap) else price
             volatility_pct = (day_high - day_low) / price * 100 if price > 0 else 0.0
 
-            # Quality filter 1: chased-move check — skip if price already ran too far from open
+            # Quality filter: chased-move check — skip if price already ran too far from open
             move_from_open = (price - open_price) / open_price * 100 if open_price > 0 else 0.0
             if move_from_open > MAX_MOVE_BEFORE_ENTRY_PCT:
-                continue
-
-            # Quality filter 2: volume trend — project full-day volume and check vs average
-            now_et      = datetime.now(ET)
-            market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
-            mins_elapsed = max(1, (now_et - market_open).total_seconds() / 60)
-            projected_vol = today_vol * (390 / mins_elapsed)
-            vol_trend_ratio = projected_vol / avg_vol if avg_vol and avg_vol > 0 else 1.0
-            if vol_trend_ratio < MIN_VOLUME_TREND_RATIO:
                 continue
 
             # VWAP context flag (not a hard filter — passed to analyst)
@@ -139,7 +165,7 @@ def scan_for_candidates() -> list[dict]:
                 "gap_pct":          round(gap_pct, 2),
                 "move_from_open":   round(move_from_open, 2),
                 "rel_volume":       round(rel_volume, 2),
-                "today_volume":     today_vol,
+                "today_volume":     effective_vol,
                 "vol_trend_ratio":  round(vol_trend_ratio, 2),
                 "bid":              round(bid, 2),
                 "ask":              round(ask, 2),
