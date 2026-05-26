@@ -3,3 +3,4 @@ alpaca-py
 yfinance
 finnhub-python
 python-dotenv
+numpy

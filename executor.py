@@ -1,4 +1,4 @@
-"""Place and close orders on Alpaca."""
+"""Place and close orders on Alpaca. Logs execution quality for slippage tracking."""
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     LimitOrderRequest, MarketOrderRequest,
@@ -9,13 +9,17 @@ from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, PAPER_TRADING,
     STOP_LOSS_PCT, TAKE_PROFIT_PCT, USE_LIMIT_ORDERS, LIMIT_OFFSET_PCT,
 )
+from logger import log_execution
 
 
 def _client() -> TradingClient:
     return TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=PAPER_TRADING)
 
 
-def place_bracket_order(symbol: str, shares: int, price: float):
+def place_bracket_order(
+    symbol: str, shares: int, price: float,
+    score: int = 0, size_pct: float = 0.0, sizing_note: str = "",
+):
     stop   = round(price * (1 - STOP_LOSS_PCT), 2)
     target = round(price * (1 + TAKE_PROFIT_PCT), 2)
 
@@ -31,8 +35,10 @@ def place_bracket_order(symbol: str, shares: int, price: float):
             take_profit=TakeProfitRequest(limit_price=target),
             stop_loss=StopLossRequest(stop_price=stop),
         )
+        order_type = "limit"
         print(f"   [ORDER] {symbol} x{shares} limit @${limit_price} | stop ${stop} | target ${target}")
     else:
+        limit_price = price
         req = MarketOrderRequest(
             symbol=symbol,
             qty=shares,
@@ -42,9 +48,17 @@ def place_bracket_order(symbol: str, shares: int, price: float):
             take_profit=TakeProfitRequest(limit_price=target),
             stop_loss=StopLossRequest(stop_price=stop),
         )
+        order_type = "market"
         print(f"   [ORDER] {symbol} x{shares} market ~${price:.2f} | stop ${stop} | target ${target}")
 
-    return _client().submit_order(req)
+    order = _client().submit_order(req)
+
+    log_execution(
+        symbol=symbol, intended_price=price, limit_price=limit_price,
+        shares=shares, order_type=order_type,
+        score=score, size_pct=size_pct, sizing_note=sizing_note,
+    )
+    return order
 
 
 def close_all_positions():

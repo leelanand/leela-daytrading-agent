@@ -1,4 +1,4 @@
-"""Position sizing, daily risk limits, and per-candidate safety checks."""
+"""Position sizing, daily risk limits, per-candidate safety checks, and correlation gates."""
 import yfinance as yf
 from alpaca.trading.client import TradingClient
 from config import (
@@ -6,6 +6,7 @@ from config import (
     MAX_POSITIONS, POSITION_SIZE_PCT, DAILY_LOSS_LIMIT,
     MAX_TRADES_PER_DAY, MAX_SECTOR_EXPOSURE, MAX_SPREAD_PCT,
     MIN_VOLUME_DAILY, GAP_TOLERANCE_PCT, KILL_SWITCH,
+    THEME_MAP, MAX_THEME_POSITIONS,
 )
 from logger import today_audit
 
@@ -78,6 +79,15 @@ def check_candidate_risk(candidate: dict, portfolio_value: float, prescan_price:
         candidate_value = position_size(portfolio_value, price) * price
         if (sector_value + candidate_value) / portfolio_value > MAX_SECTOR_EXPOSURE:
             return False, f"Sector {sector!r} would exceed {MAX_SECTOR_EXPOSURE:.0%} exposure limit"
+
+    # Theme/correlation check — avoid multiple correlated positions
+    held   = open_symbols()
+    themes = [theme for theme, members in THEME_MAP.items() if symbol in members]
+    for theme in themes:
+        members_held = [s for s in held if s in THEME_MAP[theme] and s != symbol]
+        if len(members_held) >= MAX_THEME_POSITIONS:
+            return False, (f"Theme concentration: already hold {members_held} "
+                           f"in {theme!r} group (max {MAX_THEME_POSITIONS})")
 
     return True, "ok"
 

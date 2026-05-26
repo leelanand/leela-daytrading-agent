@@ -44,6 +44,23 @@ def init_db():
             reasoning TEXT
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS execution_log (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            date            TEXT,
+            ts              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            symbol          TEXT,
+            intended_price  REAL,
+            limit_price     REAL,
+            fill_price      REAL,
+            slippage        REAL,
+            shares          INTEGER,
+            order_type      TEXT,
+            score           INTEGER,
+            size_pct        REAL,
+            sizing_note     TEXT
+        )
+    """)
     con.commit()
     con.close()
 
@@ -76,6 +93,23 @@ def log_audit(action: str, symbol: str = "", details: dict | None = None):
     AUDIT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(AUDIT_LOG_FILE, "a") as f:
         f.write(line)
+
+
+def log_execution(
+    symbol: str, intended_price: float, limit_price: float,
+    shares: int, order_type: str, score: int, size_pct: float, sizing_note: str,
+):
+    """Record execution intent. fill_price/slippage updated later from Alpaca fills."""
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        """INSERT INTO execution_log
+           (date,symbol,intended_price,limit_price,shares,order_type,score,size_pct,sizing_note)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (date.today().isoformat(), symbol, intended_price, limit_price,
+         shares, order_type, score, size_pct, sizing_note),
+    )
+    con.commit()
+    con.close()
 
 
 def log_paper_trade(symbol: str, shares: int, price: float, side: str, score: int, reasoning: str):

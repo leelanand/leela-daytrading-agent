@@ -53,6 +53,70 @@ AUDIT_LOG_FILE        = Path(__file__).parent / "audit.log"
 # ── Database ───────────────────────────────────────────────────────────────────
 DB_PATH = Path(__file__).parent / "daytrades.db"
 
+# ── Market Regime ──────────────────────────────────────────────────────────────
+REGIME_CACHE_MINS  = 30          # re-detect every 30 min
+SPY_TREND_DAYS     = 3           # rolling days for SPY trend calculation
+TRADEABLE_REGIMES  = ["TRENDING_UP", "CHOPPY"]   # trading allowed in these
+# HIGH_VOL is allowed but dynamic sizing cuts size; TRENDING_DOWN + LOW_VOLUME blocked
+
+# ── Dynamic Sizing ─────────────────────────────────────────────────────────────
+MIN_POSITION_SIZE_PCT      = 0.10   # floor — never size below 10% of portfolio
+MAX_POSITION_SIZE_PCT      = 0.25   # cap  — never size above 25% (hard ceiling)
+SCORE_SIZE_BOOST_THRESHOLD = 85     # score >= this → +25% to base size
+HIGH_VOL_THRESHOLD         = 3.0    # intraday vol% above which size is reduced
+
+# ── Advanced Exits ─────────────────────────────────────────────────────────────
+TRAILING_STOP_TRIGGER_PCT  = 0.015  # activate trailing stop after +1.5% gain
+TRAILING_STOP_DISTANCE_PCT = 0.010  # trail 1.0% below running high-watermark
+TIME_EXIT_MINS             = 90     # exit if <0.5% move after this many minutes
+
+# ── Trade Quality Filters ──────────────────────────────────────────────────────
+MAX_MOVE_BEFORE_ENTRY_PCT  = 3.0    # skip if price already moved >3% from open
+MIN_VOLUME_TREND_RATIO     = 0.70   # projected daily vol must be ≥70% of 10-day avg
+VWAP_PREFERENCE            = True   # label below-VWAP entries for analyst context
+
+# ── Time-of-Day Gates (ET) ─────────────────────────────────────────────────────
+BLOCK_MIDDAY       = True           # skip 12:00–13:00 ET (lunch lull)
+BLOCK_MIDDAY_START = (12, 0)        # (hour, minute) ET
+BLOCK_MIDDAY_END   = (13, 0)        # (hour, minute) ET
+
+# ── Performance / Adaptive ─────────────────────────────────────────────────────
+PERF_LOOKBACK_DAYS    = 10     # rolling window for adaptive sizing / pause logic
+MIN_WIN_RATE_TO_TRADE = 0.35   # pause trading if rolling win rate drops below this
+PERFORMANCE_FILE      = Path(__file__).parent / "performance.json"
+PERF_HISTORY_FILE     = Path(__file__).parent / "performance_history.jsonl"
+EXIT_STATE_FILE       = Path(__file__).parent / "exit_state.json"
+REGIME_CACHE_FILE     = Path(__file__).parent / "regime_cache.json"
+
+# ── Sector ETFs (for sector/theme strength confirmation) ───────────────────────
+SECTOR_ETFS = {
+    "Technology":             "XLK",
+    "Financial Services":     "XLF",
+    "Healthcare":             "XLV",
+    "Consumer Cyclical":      "XLY",
+    "Communication Services": "XLC",
+    "Industrials":            "XLI",
+    "Energy":                 "XLE",
+    "Materials":              "XLB",
+    "Consumer Defensive":     "XLP",
+    "Utilities":              "XLU",
+    "Real Estate":            "XLRE",
+}
+
+# ── Theme / Correlation Groups ─────────────────────────────────────────────────
+THEME_MAP = {
+    "ai_chips":   ["NVDA", "AMD", "INTC", "QCOM", "ARM", "MRVL", "AVGO", "MU", "SMCI"],
+    "crypto":     ["COIN", "MARA"],
+    "ev":         ["TSLA", "RIVN", "LCID"],
+    "big_tech":   ["AAPL", "MSFT", "META", "GOOGL", "AMZN"],
+    "cloud_saas": ["DDOG", "ZS", "CRWD", "SNOW", "PLTR"],
+    "streaming":  ["NFLX", "ROKU", "TTD"],
+    "fintech":    ["SOFI", "HOOD"],
+    "leveraged":  ["SOXL", "TQQQ"],
+    "mobility":   ["UBER", "LYFT"],
+}
+MAX_THEME_POSITIONS = 1   # max 1 open position per theme group
+
 # ── Watchlist ──────────────────────────────────────────────────────────────────
 WATCHLIST = [
     "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "META", "GOOGL", "AMZN", "NFLX", "AVGO",
