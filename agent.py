@@ -21,6 +21,7 @@ from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, PAPER_TRADING,
     MIN_SCORE_TO_TRADE, WATCHLIST_SCORE, KILL_SWITCH,
     BLOCK_MIDDAY, BLOCK_MIDDAY_START, BLOCK_MIDDAY_END,
+    MIN_MOMENTUM_TO_TRADE,
 )
 from scanner import scan_for_candidates
 from analyst import analyse_candidates
@@ -31,9 +32,13 @@ from candidates import save_candidates, load_valid_candidates
 from regime import detect_regime, is_tradeable
 from sizing import dynamic_position_size
 from exits import record_entry, monitor_positions
+from momentum import analyse_momentum, STRENGTHENING, STABLE
+from intraday import get_intraday_alignment, is_aligned_for_longs
+from risk import suggested_stop_pct
 from performance import (
     generate_daily_performance, print_performance_report,
     should_pause_trading, get_recent_performance,
+    get_weak_windows, get_expectancy_by_dimension,
 )
 
 ET = ZoneInfo("America/New_York")
@@ -92,6 +97,17 @@ def _status():
         print("\n  No open positions.")
 
 
+def _current_window() -> str:
+    """Return the named trading window for the current ET time."""
+    now  = datetime.now(ET)
+    mins = now.hour * 60 + now.minute
+    if mins < 10 * 60 + 30:  return "open"
+    if mins < 12 * 60:        return "late_morning"
+    if mins < 13 * 60:        return "midday"
+    if mins < 15 * 60:        return "afternoon"
+    return "power_hour"
+
+
 def _prescan():
     """Discover and score candidates. Save to JSON. NEVER places orders."""
     if not _market_open():
@@ -100,12 +116,20 @@ def _prescan():
 
     # Regime check
     regime, regime_reason = detect_regime()
-    print(f"   Regime: {regime} — {regime_reason}")
+    print(f"   Regime : {regime} — {regime_reason}")
     log_audit("REGIME_DETECTED", details={"regime": regime, "reason": regime_reason})
 
     if not is_tradeable(regime):
         print(f"   [NO TRADE] Regime {regime!r} not in tradeable set — prescan aborted.")
         log_audit("PRESCAN_SKIPPED", details={"reason": f"regime={regime}"})
+        return
+
+    # Intraday alignment check
+    alignment, align_reason = get_intraday_alignment()
+    print(f"   Intraday: {alignment} — {align_reason}")
+    if not is_aligned_for_longs(alignment):
+        print(f"   [NO TRADE] Intraday selloff in progress — prescan aborted.")
+        log_audit("PRESCAN_SKIPPED", details={"reason": f"intraday={alignment}"})
         return
 
     log_audit("PRESCAN_START")
@@ -147,7 +171,7 @@ def _prescan():
 
 
 def _scan_and_trade(paper_mode: bool = False):
-    """Load prescan candidates, re-validate, execute limit orders (or simulate)."""
+    """Load prescan candidates, validate all gates, execute limit orders (or simulate)."""
     if not _market_open():
         print("   Market is closed — skipping scan.")
         return
@@ -155,19 +179,35 @@ def _scan_and_trade(paper_mode: bool = False):
     # Midday block
     if _in_midday_block():
         now = datetime.now(ET).strftime("%H:%M")
-        print(f"   [TIME GATE] Midday block active ({now} ET) — skipping scan.")
+        print(f"   [TIME GATE] Midday block ({now} ET) — skipping scan.")
         log_audit("SCAN_SKIPPED", details={"reason": "midday_block"})
+        return
+
+    # Time-window adaptive block (based on historical performance in this window)
+    current_win  = _current_window()
+    weak_windows = get_weak_windows()
+    if current_win in weak_windows:
+        print(f"   [TIME GATE] Window {current_win!r} blocked by adaptive performance data.")
+        log_audit("SCAN_SKIPPED", details={"reason": f"weak_window:{current_win}"})
         return
 
     # Regime check
     regime, regime_reason = detect_regime()
-    print(f"   Regime: {regime} — {regime_reason}")
+    print(f"   Regime  : {regime} — {regime_reason}")
     if not is_tradeable(regime):
         print(f"   [NO TRADE] Regime {regime!r} — scan aborted.")
         log_audit("SCAN_SKIPPED", details={"reason": f"regime={regime}"})
         return
 
-    # Adaptive pause check
+    # Intraday alignment check (real-time SPY direction)
+    alignment, align_reason = get_intraday_alignment()
+    print(f"   Intraday: {alignment} — {align_reason}")
+    if not is_aligned_for_longs(alignment):
+        print(f"   [NO TRADE] Intraday selloff — blocking all longs.")
+        log_audit("SCAN_SKIPPED", details={"reason": f"intraday_selloff"})
+        return
+
+    # Adaptive pause check (rolling win rate)
     pause, pause_reason = should_pause_trading()
     if pause:
         print(f"   [ADAPTIVE PAUSE] {pause_reason}")
@@ -180,11 +220,9 @@ def _scan_and_trade(paper_mode: bool = False):
         log_audit("TRADE_BLOCKED", details={"reason": reason})
         return
 
-    # Get rolling win rate for dynamic sizing
-    rolling       = get_recent_performance()
-    recent_wr     = rolling.get("win_rate", 0.50)
-
-    held = open_symbols()
+    rolling   = get_recent_performance()
+    recent_wr = rolling.get("win_rate", 0.50)
+    held      = open_symbols()
 
     prescan = load_valid_candidates()
     if prescan:
@@ -192,7 +230,8 @@ def _scan_and_trade(paper_mode: bool = False):
         if not candidates:
             print("   No tradeable prescan candidates available.")
             return
-        print(f"   Using {len(candidates)} prescan candidate(s) [rolling WR={recent_wr:.0%}].")
+        print(f"   {len(candidates)} prescan candidate(s) | WR={recent_wr:.0%} | "
+              f"window={current_win} | align={alignment}")
     else:
         print("   No valid prescan — running fresh scan...")
         fresh    = scan_for_candidates()
@@ -222,35 +261,65 @@ def _scan_and_trade(paper_mode: bool = False):
         prescan_price = pick.get("price")
         vol_pct       = pick.get("volatility_pct", 0.0)
         spread_pct    = pick.get("spread_pct", 0.0)
+        setup_type    = pick.get("setup_type", "unknown")
 
+        # Risk gate
         risk_ok, risk_reason = check_candidate_risk(pick, portfolio, prescan_price)
         if not risk_ok:
             print(f"   [SKIP] {symbol}: {risk_reason}")
-            log_audit("TRADE_REJECTED", symbol, {"score": score, "reason": risk_reason})
+            log_audit("TRADE_REJECTED", symbol, {
+                "score": score, "reason": risk_reason, "setup_type": setup_type,
+            })
+            continue
+
+        # Momentum analysis — 1-min bars check (fresh, per symbol)
+        mom = analyse_momentum(symbol)
+        print(f"   Momentum {symbol}: {mom['strength']} — {mom['reason']}")
+        if mom["strength"] not in MIN_MOMENTUM_TO_TRADE:
+            log_audit("TRADE_REJECTED", symbol, {
+                "score": score, "reason": f"momentum={mom['strength']}: {mom['reason']}",
+                "setup_type": setup_type,
+            })
+            print(f"   [SKIP] {symbol}: momentum {mom['strength']} — not tradeable")
             continue
 
         price  = pick["price"]
         shares, size_pct, size_note = dynamic_position_size(
             portfolio, price, score, vol_pct, spread_pct, regime, recent_wr
         )
-        cost = shares * price
+        stop_pct = suggested_stop_pct(mom["strength"], regime)
+        cost     = shares * price
+
+        audit_details = {
+            "score":      score,
+            "shares":     shares,
+            "price":      price,
+            "cost":       round(cost, 2),
+            "size_pct":   round(size_pct, 3),
+            "sizing":     size_note,
+            "regime":     regime,
+            "alignment":  alignment,
+            "momentum":   mom["strength"],
+            "setup_type": setup_type,
+            "stop_pct":   round(stop_pct, 4),
+        }
 
         if paper_mode:
-            print(f"   [PAPER] WOULD BUY {symbol} score={score}/100  {size_note}")
-            print(f"   [PAPER] {shares} shares @ ${price:.2f} = ${cost:,.0f} | reasoning: {reasoning}")
+            print(f"   [PAPER] WOULD BUY {symbol}  score={score}/100  {size_note}  "
+                  f"stop={stop_pct:.1%}  setup={setup_type}")
+            print(f"   [PAPER] {shares}sh @ ${price:.2f} = ${cost:,.0f} | {reasoning}")
             log_paper_trade(symbol, shares, price, "BUY", score, reasoning)
-            log_audit("PAPER_TRADE", symbol, {
-                "score": score, "shares": shares, "price": price, "size_pct": round(size_pct, 3),
-            })
+            log_audit("PAPER_TRADE", symbol, audit_details)
         else:
-            print(f"   BUY {symbol} score={score}/100  {size_note}")
-            print(f"   {shares} shares @ ${price:.2f} = ${cost:,.0f} | {reasoning}")
-            place_bracket_order(symbol, shares, price, score=score, size_pct=size_pct, sizing_note=size_note)
+            print(f"   BUY {symbol}  score={score}/100  {size_note}  "
+                  f"stop={stop_pct:.1%}  setup={setup_type}")
+            print(f"   {shares}sh @ ${price:.2f} = ${cost:,.0f} | {reasoning}")
+            place_bracket_order(
+                symbol, shares, price,
+                score=score, size_pct=size_pct, sizing_note=size_note, stop_pct=stop_pct,
+            )
             record_entry(symbol, price)
-            log_audit("ORDER_PLACED", symbol, {
-                "score": score, "shares": shares, "price": price,
-                "cost": round(cost, 2), "size_pct": round(size_pct, 3), "sizing": size_note,
-            })
+            log_audit("ORDER_PLACED", symbol, audit_details)
 
 
 def _report():
@@ -323,8 +392,44 @@ if __name__ == "__main__":
 
     elif args.close:
         _header("FORCE CLOSE — 3:45pm ET")
+        import time
         close_all_positions()
         log_audit("FORCE_CLOSE")
+
+        # EOD verification — confirm fully flat, no overnight exposure
+        time.sleep(3)
+        client   = _client()
+        remaining = client.get_all_positions()
+        open_ords = client.get_orders()
+
+        if remaining:
+            print(f"\n   [RETRY] {len(remaining)} position(s) still open — retrying...")
+            for p in remaining:
+                try:
+                    client.close_position(p.symbol)
+                    print(f"   [CLOSED] {p.symbol}")
+                except Exception as e:
+                    print(f"   [ERROR] {p.symbol}: {e}")
+            time.sleep(2)
+            remaining = client.get_all_positions()
+
+        if open_ords:
+            print(f"   [CLEANUP] Cancelling {len(open_ords)} open order(s)...")
+            client.cancel_orders()
+            time.sleep(1)
+            open_ords = client.get_orders()
+
+        print(f"\n  EOD VERIFICATION:")
+        print(f"  Open positions : {len(remaining)}")
+        print(f"  Open orders    : {len(open_ords)}")
+        if not remaining and not open_ords:
+            print(f"  ✓ Fully flat — no overnight exposure")
+        else:
+            print(f"  ⚠ WARNING: still have open items — check immediately!")
+        log_audit("EOD_VERIFIED", details={
+            "positions": len(remaining),
+            "orders":    len(open_ords),
+        })
         print()
         _status()
 

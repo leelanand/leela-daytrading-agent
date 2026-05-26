@@ -19,8 +19,10 @@ def _client() -> TradingClient:
 def place_bracket_order(
     symbol: str, shares: int, price: float,
     score: int = 0, size_pct: float = 0.0, sizing_note: str = "",
+    stop_pct: float | None = None,
 ):
-    stop   = round(price * (1 - STOP_LOSS_PCT), 2)
+    sp     = stop_pct if stop_pct is not None else STOP_LOSS_PCT
+    stop   = round(price * (1 - sp), 2)
     target = round(price * (1 + TAKE_PROFIT_PCT), 2)
 
     if USE_LIMIT_ORDERS:
@@ -36,7 +38,8 @@ def place_bracket_order(
             stop_loss=StopLossRequest(stop_price=stop),
         )
         order_type = "limit"
-        print(f"   [ORDER] {symbol} x{shares} limit @${limit_price} | stop ${stop} | target ${target}")
+        stop_label = f"−{sp:.1%}"
+        print(f"   [ORDER] {symbol} x{shares} limit @${limit_price} | stop ${stop} ({stop_label}) | target ${target}")
     else:
         limit_price = price
         req = MarketOrderRequest(

@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from config import (
     DB_PATH, PERFORMANCE_FILE, PERF_HISTORY_FILE,
     PERF_LOOKBACK_DAYS, MIN_WIN_RATE_TO_TRADE,
+    WINDOW_BLOCK_MIN_TRADES, WINDOW_BLOCK_AVG_PNL,
 )
 
 ET = ZoneInfo("America/New_York")
@@ -231,6 +232,22 @@ def print_performance_report(perf: dict):
         for reason, cnt in sorted(perf["rejections"].items(), key=lambda x: -x[1]):
             print(f"    {reason[:52]:52s}  {cnt}×")
 
+    # Expectancy by dimension (only if data available)
+    try:
+        dims = get_expectancy_by_dimension()
+        if dims.get("by_setup"):
+            print(f"\n  Expectancy by Setup Type ({PERF_LOOKBACK_DAYS}d):")
+            for s, st in sorted(dims["by_setup"].items(), key=lambda x: -x[1]["expectancy"]):
+                print(f"    {s:22s}  n={st['n']:3d}  WR={st['win_rate']:.0%}  "
+                      f"E=${st['expectancy']:+.2f}")
+        if dims.get("by_regime"):
+            print(f"\n  Expectancy by Regime ({PERF_LOOKBACK_DAYS}d):")
+            for r, st in sorted(dims["by_regime"].items(), key=lambda x: -x[1]["expectancy"]):
+                print(f"    {r:16s}  n={st['n']:3d}  WR={st['win_rate']:.0%}  "
+                      f"E=${st['expectancy']:+.2f}")
+    except Exception:
+        pass
+
     # Non-binding adaptive suggestions
     wr  = r.get("win_rate", 0.5) if r else 0.5
     pf2 = r.get("profit_factor", 1.0) if r else 1.0
@@ -253,6 +270,101 @@ def print_performance_report(perf: dict):
             print(f"  ⚠  Negative expectancy ${exp:+.2f} — strategy losing edge, pause and review")
 
     print(f"{'='*64}\n")
+
+
+def get_weak_windows() -> set[str]:
+    """
+    Returns time windows to avoid based on rolling performance history.
+    A window is blocked if average P&L per trade < WINDOW_BLOCK_AVG_PNL
+    across at least WINDOW_BLOCK_MIN_TRADES samples.
+    """
+    if not PERF_HISTORY_FILE.exists():
+        return set()
+    try:
+        lines = [l for l in PERF_HISTORY_FILE.read_text().strip().split("\n") if l]
+        lines = lines[-PERF_LOOKBACK_DAYS:]
+
+        window_avgs: dict[str, list[float]] = {}
+        for line in lines:
+            data = json.loads(line)
+            for w, stats in data.get("time_windows", {}).items():
+                if stats.get("trades", 0) > 0:
+                    window_avgs.setdefault(w, []).append(stats["avg"])
+
+        blocked = set()
+        for w, avgs in window_avgs.items():
+            if len(avgs) >= WINDOW_BLOCK_MIN_TRADES:
+                mean_avg = sum(avgs) / len(avgs)
+                if mean_avg < WINDOW_BLOCK_AVG_PNL:
+                    blocked.add(w)
+        return blocked
+    except Exception:
+        return set()
+
+
+def get_expectancy_by_dimension() -> dict:
+    """
+    Returns expectancy broken down by time-window, market regime, and setup type.
+    Reads ORDER_PLACED events from audit_log (which carry regime + setup_type in details).
+    """
+    since = (date.today() - timedelta(days=PERF_LOOKBACK_DAYS)).isoformat()
+    con   = sqlite3.connect(DB_PATH)
+
+    placements = con.execute(
+        "SELECT symbol,details,ts FROM audit_log WHERE action='ORDER_PLACED' AND date >= ?",
+        (since,),
+    ).fetchall()
+
+    trade_pnl = {
+        r[0]: r[1]
+        for r in con.execute(
+            "SELECT symbol,pnl FROM trades WHERE date >= ?", (since,)
+        ).fetchall()
+    }
+    con.close()
+
+    by_window: dict[str, list[float]] = {}
+    by_regime: dict[str, list[float]] = {}
+    by_setup:  dict[str, list[float]] = {}
+
+    for sym, details_str, ts in placements:
+        pnl = trade_pnl.get(sym)
+        if pnl is None:
+            continue
+        try:
+            details = json.loads(details_str)
+        except Exception:
+            details = {}
+
+        w  = _window(ts) if ts else "unknown"
+        rg = details.get("regime", "unknown")
+        st = details.get("setup_type", "unknown")
+
+        by_window.setdefault(w,  []).append(pnl)
+        by_regime.setdefault(rg, []).append(pnl)
+        by_setup.setdefault(st,  []).append(pnl)
+
+    def _stats(pnls: list[float]) -> dict:
+        if not pnls:
+            return {"n": 0, "win_rate": 0.0, "expectancy": 0.0, "avg_pnl": 0.0}
+        wins  = [p for p in pnls if p > 0]
+        losses= [p for p in pnls if p <= 0]
+        wr    = len(wins) / len(pnls)
+        aw    = sum(wins)   / len(wins)   if wins   else 0.0
+        al    = abs(sum(losses) / len(losses)) if losses else 0.0
+        exp   = (wr * aw) - ((1 - wr) * al)
+        return {
+            "n":          len(pnls),
+            "win_rate":   round(wr, 2),
+            "expectancy": round(exp, 2),
+            "avg_pnl":    round(sum(pnls) / len(pnls), 2),
+        }
+
+    return {
+        "by_window": {k: _stats(v) for k, v in by_window.items()},
+        "by_regime": {k: _stats(v) for k, v in by_regime.items()},
+        "by_setup":  {k: _stats(v) for k, v in by_setup.items()},
+    }
 
 
 def should_pause_trading() -> tuple[bool, str]:

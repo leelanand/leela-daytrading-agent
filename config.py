@@ -88,6 +88,22 @@ PERF_HISTORY_FILE     = Path(__file__).parent / "performance_history.jsonl"
 EXIT_STATE_FILE       = Path(__file__).parent / "exit_state.json"
 REGIME_CACHE_FILE     = Path(__file__).parent / "regime_cache.json"
 
+# ── Intraday Momentum (1-min bars) ────────────────────────────────────────────
+INTRADAY_BARS             = 15     # 1-min bars per symbol for momentum classification
+INTRADAY_ALIGN_CACHE_MINS = 5      # minutes to cache SPY intraday direction check
+INTRADAY_CACHE_FILE       = Path(__file__).parent / "intraday_cache.json"
+MIN_MOMENTUM_TO_TRADE     = ["STRENGTHENING", "STABLE"]  # reject WEAKENING + EXHAUSTED
+BLOCK_ON_SELLING_OFF      = True   # block all longs when SPY is actively selling off
+
+# ── Fast Loss Control ──────────────────────────────────────────────────────────
+RAPID_INVALIDATION_MINS  = 8       # exit immediately if in loss after this many minutes
+TIGHT_STOP_PCT           = 0.008   # 0.8% stop used when momentum is WEAKENING
+TIGHT_STOP_REGIMES       = ["HIGH_VOL"]  # regimes that also trigger tighter stop
+
+# ── Time-Window Adaptive Blocking ─────────────────────────────────────────────
+WINDOW_BLOCK_MIN_TRADES  = 5       # min samples in a window before blocking it
+WINDOW_BLOCK_AVG_PNL     = -40.0   # block window if avg P&L per trade < this ($)
+
 # ── Sector ETFs (for sector/theme strength confirmation) ───────────────────────
 SECTOR_ETFS = {
     "Technology":             "XLK",

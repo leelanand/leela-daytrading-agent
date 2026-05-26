@@ -53,6 +53,17 @@ def _news(symbol: str) -> list[str]:
         return []
 
 
+def _classify_setup(gap_pct: float, rel_volume: float, has_news: bool, vol_trend_ratio: float) -> str:
+    """Classify the type of momentum setup for analytics and expectancy tracking."""
+    if gap_pct >= 2.5 and has_news and rel_volume >= 2.0:
+        return "gap_and_go"
+    if rel_volume >= 3.0 and not has_news:
+        return "vol_spike"
+    if has_news and gap_pct >= 1.5:
+        return "news_momentum"
+    return "trend_continuation"
+
+
 def scan_for_candidates() -> list[dict]:
     """
     Return top momentum candidates sorted by gap * rel_volume.
@@ -116,8 +127,9 @@ def scan_for_candidates() -> list[dict]:
             # VWAP context flag (not a hard filter — passed to analyst)
             below_vwap = price < vwap if VWAP_PREFERENCE else False
 
-            sector = _sector(symbol)
-            news   = _news(symbol)
+            sector     = _sector(symbol)
+            news       = _news(symbol)
+            setup_type = _classify_setup(gap_pct, rel_volume, len(news) > 0, vol_trend_ratio)
 
             candidates.append({
                 "symbol":           symbol,
@@ -138,6 +150,7 @@ def scan_for_candidates() -> list[dict]:
                 "sector":           sector,
                 "news":             news,
                 "has_news":         len(news) > 0,
+                "setup_type":       setup_type,
             })
         except Exception:
             continue

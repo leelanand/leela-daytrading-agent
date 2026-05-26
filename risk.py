@@ -7,6 +7,7 @@ from config import (
     MAX_TRADES_PER_DAY, MAX_SECTOR_EXPOSURE, MAX_SPREAD_PCT,
     MIN_VOLUME_DAILY, GAP_TOLERANCE_PCT, KILL_SWITCH,
     THEME_MAP, MAX_THEME_POSITIONS,
+    STOP_LOSS_PCT, TIGHT_STOP_PCT, TIGHT_STOP_REGIMES,
 )
 from logger import today_audit
 
@@ -90,6 +91,13 @@ def check_candidate_risk(candidate: dict, portfolio_value: float, prescan_price:
                            f"in {theme!r} group (max {MAX_THEME_POSITIONS})")
 
     return True, "ok"
+
+
+def suggested_stop_pct(momentum_strength: str = "", regime: str = "") -> float:
+    """Return tighter stop when momentum is WEAKENING or regime is HIGH_VOL."""
+    if momentum_strength == "WEAKENING" or regime in TIGHT_STOP_REGIMES:
+        return TIGHT_STOP_PCT
+    return STOP_LOSS_PCT
 
 
 def position_size(portfolio_value: float, price: float) -> int:

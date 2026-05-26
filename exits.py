@@ -12,7 +12,7 @@ from alpaca.trading.client import TradingClient
 from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, PAPER_TRADING,
     TRAILING_STOP_TRIGGER_PCT, TRAILING_STOP_DISTANCE_PCT,
-    TIME_EXIT_MINS, EXIT_STATE_FILE,
+    TIME_EXIT_MINS, EXIT_STATE_FILE, RAPID_INVALIDATION_MINS,
 )
 from logger import log_audit
 
@@ -81,7 +81,18 @@ def check_exits() -> list[str]:
                 reason = (f"momentum_flip: peaked ${high:.2f} "
                           f"(+{(high/entry-1):.1%}), now ${current:.2f} < entry")
 
-        # 3. Time-based exit — no movement after TIME_EXIT_MINS
+        # 3. Rapid invalidation — momentum thesis failed in first few minutes
+        if not reason:
+            entry_iso = state.get("entry_times", {}).get(symbol)
+            if entry_iso:
+                entered  = datetime.fromisoformat(entry_iso)
+                age_mins = (datetime.now(timezone.utc) - entered).total_seconds() / 60
+                if age_mins <= RAPID_INVALIDATION_MINS and current < entry * 0.995:
+                    loss_pct = (entry - current) / entry * 100
+                    reason   = (f"rapid_invalidation: −{loss_pct:.2f}% in {age_mins:.0f} min "
+                                f"— momentum thesis failed at entry")
+
+        # 4. Time-based exit — no movement after TIME_EXIT_MINS
         if not reason:
             entry_iso = state.get("entry_times", {}).get(symbol)
             if entry_iso:
