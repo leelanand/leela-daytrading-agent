@@ -276,13 +276,6 @@ def _prescan():
 
     scored = analyse_candidates(candidates)
 
-    # In CHOPPY regime lower the bar slightly — flat markets produce fewer high-scorers
-    if regime == CHOPPY:
-        for p in scored:
-            if CHOPPY_MIN_SCORE <= p.get("score", 0) < MIN_SCORE_TO_TRADE:
-                p["tradeable"] = True
-                p["watchlist"] = False
-
     tradeable = [p for p in scored if p.get("tradeable")]
     watchlist = [p for p in scored if p.get("watchlist")]
 
@@ -300,9 +293,11 @@ def _prescan():
         for k, v in scan_map.get(p["symbol"], {}).items():
             p.setdefault(k, v)
 
-    # Store regime in each candidate so execution phase can use it
+    # Store regime and prescan timestamp so execution can measure signal-to-entry latency
+    prescan_ts = datetime.now(ET).isoformat()
     for p in scored:
         p["regime"] = regime
+        p["_prescan_ts"] = prescan_ts
 
     save_candidates(scored)
     log_audit("PRESCAN_DONE", details={
@@ -334,6 +329,13 @@ def _scan_and_trade(paper_mode: bool = False):
               f"{CHAOS_LOCKOUT_END_ET[0]}:{CHAOS_LOCKOUT_END_ET[1]:02d} ET — no new entries")
         return
 
+    # Intraday gapper refresh — runs before any time gate so gappers stay fresh during midday block
+    try:
+        from gapper import refresh_gappers_intraday
+        refresh_gappers_intraday()
+    except Exception:
+        pass
+
     # Midday block
     if _in_midday_block():
         now = datetime.now(ET).strftime("%H:%M")
@@ -348,13 +350,6 @@ def _scan_and_trade(paper_mode: bool = False):
         print(f"   [TIME GATE] Window {current_win!r} blocked by adaptive performance data.")
         log_audit("SCAN_SKIPPED", details={"reason": f"weak_window:{current_win}"})
         return
-
-    # Intraday gapper refresh — runs unconditionally so gappers are current even on NO_TRADE days
-    try:
-        from gapper import refresh_gappers_intraday
-        refresh_gappers_intraday()
-    except Exception:
-        pass
 
     # Regime check
     regime, regime_reason = detect_regime()
@@ -457,6 +452,7 @@ def _scan_and_trade(paper_mode: bool = False):
                     p.setdefault(k, v)
                 p["regime"] = regime
                 candidates.append(p)
+        save_candidates(candidates)
 
     # Add tradeable candidates to the shortlist before processing
     try:
@@ -909,6 +905,8 @@ def _scan_and_trade(paper_mode: bool = False):
             })
 
         trades_this_scan += 1
+
+    log_audit("SCAN_DONE", details={"trades": trades_this_scan, "regime": regime, "candidates": len(candidates)})
 
 
 def _report():

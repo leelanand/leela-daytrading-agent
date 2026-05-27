@@ -63,7 +63,7 @@ REGIME_CACHE_MINS            = 15   # re-detect every 15 min
 EARLY_SESSION_GRACE_MINS     = 45   # skip vol-based NO_TRADE in first 45 min after open (9:30-10:15 ET)
 SPY_TREND_DAYS     = 3           # rolling days for SPY trend calculation
 TRADEABLE_REGIMES  = ["TRENDING_UP", "CHOPPY", "LOW_VOLUME"]
-# HIGH_VOL allowed but dynamic sizing cuts size; TRENDING_DOWN blocked
+# HIGH_VOL and TRENDING_DOWN are both blocked; LOW_VOLUME triggers REDUCED_RISK mode
 # LOW_VOLUME now triggers REDUCED_RISK mode instead of full abort — see below
 
 # ── LOW_VOLUME adaptive thresholds ─────────────────────────────────────────────
