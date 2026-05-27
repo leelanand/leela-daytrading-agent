@@ -48,7 +48,7 @@ from config import (
     HIGH_VOL_MODERATE_ATR_PCT, HIGH_VOL_MODERATE_EXTRA_PTS, HIGH_VOL_MODERATE_SIZE_CUT,
     LIMIT_OFFSET_TIGHT_PCT, LIMIT_OFFSET_NORMAL_PCT, LIMIT_OFFSET_WIDE_PCT, MAX_LIMIT_SLIPPAGE_PCT,
     LIVE_PROMOTED_SETUPS, LIVE_REQUIRE_PROMOTED_SETUPS,
-    PAPER_LOW_VOLUME_MIN_SCORE, LIVE_LOW_VOLUME_MIN_SCORE,
+    PAPER_EXPLORATORY_LOW_VOLUME_MIN_SCORE, PAPER_LIVE_REALISTIC_LOW_VOLUME_MIN_SCORE, LIVE_LOW_VOLUME_MIN_SCORE,
     EXTREME_HIGH_VOL_VIX, EXTREME_HIGH_VOL_ATR_PCT, EXTREME_HIGH_VOL_SPREAD_MULT,
     MAX_TRADES_PER_DAY, AUDIT_LOG_FILE,
 )
@@ -411,11 +411,17 @@ def _prescan():
 
     low_vol_mode  = (regime == LOW_VOLUME)
     high_vol_mode = (regime == HIGH_VOL)
-    lv_min_score  = LIVE_LOW_VOLUME_MIN_SCORE if TRADING_MODE == "LIVE" else PAPER_LOW_VOLUME_MIN_SCORE
+    if TRADING_MODE == "LIVE":
+        _lv_score_label = str(LIVE_LOW_VOLUME_MIN_SCORE)
+        _lv_score_log   = LIVE_LOW_VOLUME_MIN_SCORE
+    else:
+        _lv_score_label = (f"{PAPER_EXPLORATORY_LOW_VOLUME_MIN_SCORE}(exp)/"
+                           f"{PAPER_LIVE_REALISTIC_LOW_VOLUME_MIN_SCORE}(real)")
+        _lv_score_log   = PAPER_EXPLORATORY_LOW_VOLUME_MIN_SCORE
     if low_vol_mode:
         ctx = get_regime_context()
         print(f"   [LOW_VOLUME] REDUCED_RISK mode active — restrictions at scan time:")
-        print(f"     score >= {lv_min_score} ({'live' if TRADING_MODE == 'LIVE' else 'paper'})  "
+        print(f"     score >= {_lv_score_label} ({'live' if TRADING_MODE == 'LIVE' else 'paper'})  "
               f"|  stock RVOL >= {LOW_VOLUME_STOCK_RVOL}x  "
               f"|  max {LOW_VOLUME_MAX_TRADES} trade(s)  |  size -50%")
         print(f"     vix={ctx.get('vix','?')}  vol_10d={ctx.get('vol_ratio_10d','?')}  "
@@ -423,7 +429,7 @@ def _prescan():
               f"baseline={ctx.get('vol_baseline','?')}")
         log_audit("LOW_VOLUME_MODE", details={
             "restrictions": {
-                "min_score":   lv_min_score,
+                "min_score":   _lv_score_log,
                 "min_rvol":    LOW_VOLUME_STOCK_RVOL,
                 "max_trades":  LOW_VOLUME_MAX_TRADES,
                 "size_cut":    "50%",
@@ -560,13 +566,19 @@ def _scan_and_trade(paper_mode: bool = False):
 
     low_vol_mode  = (regime == LOW_VOLUME)
     high_vol_mode = (regime == HIGH_VOL)
-    lv_min_score  = LIVE_LOW_VOLUME_MIN_SCORE if TRADING_MODE == "LIVE" else PAPER_LOW_VOLUME_MIN_SCORE
+    if TRADING_MODE == "LIVE":
+        _lv_score_label = str(LIVE_LOW_VOLUME_MIN_SCORE)
+        _lv_score_log   = LIVE_LOW_VOLUME_MIN_SCORE
+    else:
+        _lv_score_label = (f"{PAPER_EXPLORATORY_LOW_VOLUME_MIN_SCORE}(exp)/"
+                           f"{PAPER_LIVE_REALISTIC_LOW_VOLUME_MIN_SCORE}(real)")
+        _lv_score_log   = PAPER_EXPLORATORY_LOW_VOLUME_MIN_SCORE
     if low_vol_mode:
         ctx = get_regime_context()
-        print(f"   [LOW_VOLUME] REDUCED_RISK: score>={lv_min_score} ({'live' if TRADING_MODE == 'LIVE' else 'paper'})  "
+        print(f"   [LOW_VOLUME] REDUCED_RISK: score>={_lv_score_label} ({'live' if TRADING_MODE == 'LIVE' else 'paper'})  "
               f"RVOL>={LOW_VOLUME_STOCK_RVOL}x  max {LOW_VOLUME_MAX_TRADES} trade  size-50%")
         log_audit("LOW_VOLUME_MODE", details={"restrictions": {
-            "min_score":  lv_min_score,
+            "min_score":  _lv_score_log,
             "min_rvol":   LOW_VOLUME_STOCK_RVOL,
             "max_trades": LOW_VOLUME_MAX_TRADES,
             "size_cut":   "50%",
@@ -794,15 +806,33 @@ def _scan_and_trade(paper_mode: bool = False):
                     observed=score, threshold=hv_required, is_experimental=is_experimental)
             continue
 
-        # LOW_VOLUME confidence gate (PAPER uses lower bar, LIVE uses higher)
-        effective_lv_min = LIVE_LOW_VOLUME_MIN_SCORE if TRADING_MODE == "LIVE" else PAPER_LOW_VOLUME_MIN_SCORE
-        if low_vol_mode and score < effective_lv_min:
-            print(f"   [SKIP] {symbol}: LOW_VOLUME requires score>={effective_lv_min} "
-                  f"({'live' if TRADING_MODE == 'LIVE' else 'paper'}) (got {score})")
-            _reject(symbol, score, setup_type, "low_vol_gate", "low_volume_min_score",
-                    observed=score, threshold=effective_lv_min,
-                    is_experimental=is_experimental)
-            continue
+        # LOW_VOLUME confidence gate — strict for LIVE, two-tier for PAPER
+        # LIVE: reject below LIVE_LOW_VOLUME_MIN_SCORE (no exploratory relaxation)
+        # PAPER: reject below exploratory threshold; flag 70-74 for PAPER_EXPLORATORY_ONLY tagging
+        lv_exploratory_allowed = False
+        if low_vol_mode:
+            if TRADING_MODE == "LIVE":
+                if score < LIVE_LOW_VOLUME_MIN_SCORE:
+                    print(f"   [SKIP] {symbol}: LOW_VOLUME requires score>={LIVE_LOW_VOLUME_MIN_SCORE} "
+                          f"(live) (got {score})")
+                    _reject(symbol, score, setup_type, "low_vol_gate", "low_volume_min_score",
+                            observed=score, threshold=LIVE_LOW_VOLUME_MIN_SCORE,
+                            is_experimental=is_experimental)
+                    continue
+            else:
+                if score < PAPER_EXPLORATORY_LOW_VOLUME_MIN_SCORE:
+                    print(f"   [SKIP] {symbol}: LOW_VOLUME requires score>={PAPER_EXPLORATORY_LOW_VOLUME_MIN_SCORE} "
+                          f"(paper exploratory min) (got {score})")
+                    _reject(symbol, score, setup_type, "low_vol_gate", "low_volume_min_score",
+                            observed=score, threshold=PAPER_EXPLORATORY_LOW_VOLUME_MIN_SCORE,
+                            is_experimental=is_experimental)
+                    continue
+                elif score < PAPER_LIVE_REALISTIC_LOW_VOLUME_MIN_SCORE:
+                    lv_exploratory_allowed = True
+                    print(f"   [PAPER_EXP] {symbol}: LOW_VOLUME score {score} in exploratory band "
+                          f"({PAPER_EXPLORATORY_LOW_VOLUME_MIN_SCORE}-"
+                          f"{PAPER_LIVE_REALISTIC_LOW_VOLUME_MIN_SCORE - 1}) "
+                          f"— will tag PAPER_EXPLORATORY_ONLY")
 
         # LOW_VOLUME spread gate — spread must be tight in low-vol sessions
         if low_vol_mode and spread_pct > PREFERRED_SPREAD_PCT:
@@ -1213,6 +1243,25 @@ def _scan_and_trade(paper_mode: bool = False):
                     "reason": f"no_trade_regime:{regime}",
                     "would_reject_live": True,
                     "score": score, "setup_type": setup_type,
+                })
+            elif lv_exploratory_allowed:
+                log_audit("PAPER_EXPLORATORY_ONLY", symbol, {
+                    "reason":                "lv_exploratory_threshold",
+                    "score":                 score,
+                    "normal_threshold":      PAPER_LIVE_REALISTIC_LOW_VOLUME_MIN_SCORE,
+                    "exploratory_threshold": PAPER_EXPLORATORY_LOW_VOLUME_MIN_SCORE,
+                    "regime":                regime,
+                    "setup_type":            setup_type,
+                    "claude_involved":       not pick.get("_local_only", False),
+                    "rvol":                  round(iq.get("rvol", 0.0), 2),
+                    "spread":                spread_pct,
+                    "catalyst_quality":      pick.get("_top_news_impact", 0),
+                    "orb_status":            orb_breakout,
+                    "pullback_status":       pullback_result.get("pullback_quality", "N/A"),
+                    "momentum_state":        mom["strength"],
+                    "would_pass_live_rules": not would_reject_live,
+                    "would_reject_live_reason": would_reject_live_reason,
+                    "would_reject_live":     True,
                 })
             elif would_reject_live:
                 log_audit("PAPER_EXPLORATORY_ONLY", symbol, {

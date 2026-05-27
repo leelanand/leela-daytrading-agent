@@ -18,7 +18,7 @@ from datetime import date, datetime
 from config import (
     ANTHROPIC_API_KEY, MIN_SCORE_TO_TRADE, WATCHLIST_SCORE,
     SECTOR_ETFS, NEWS_MIN_IMPACT_SCORE,
-    CLAUDE_MIN_LOCAL_SCORE, ENABLE_CLAUDE_RESCORING,
+    CLAUDE_MIN_LOCAL_SCORE, CLAUDE_MIN_LOCAL_SCORE_EXPLORATORY, ENABLE_CLAUDE_RESCORING,
     MAX_SYMBOLS_PER_CLAUDE_BATCH, ANALYST_SCORE_CACHE_FILE,
     CLAUDE_CACHE_PRICE_MOVE_INVALIDATE_PCT,
     CLAUDE_CACHE_RVOL_CHANGE_INVALIDATE_PCT,
@@ -407,11 +407,31 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
         local = ctx["local_score"]
 
         if local < CLAUDE_MIN_LOCAL_SCORE:
-            budget["local_rejects"] += 1
-            results[sym] = _make_local_result(ctx, local, news_stats)
-            eff_log.append(_make_eff_entry(sym, local, None, now_str,
-                                           cache_hit=False, local_only=True))
-            continue
+            # Conditional exploratory gate (paper-only): allow 60-64 through to Claude
+            # when at least one qualifying condition holds
+            exploratory_gate_ok = False
+            if TRADING_MODE != "LIVE" and local >= CLAUDE_MIN_LOCAL_SCORE_EXPLORATORY:
+                c_obj          = ctx["c"]
+                rvol           = c_obj.get("rel_volume", 0.0) or c_obj.get("rvol", 0.0) or 0.0
+                is_top_gapper  = bool(c_obj.get("_is_top_gapper", False))
+                strong_catalyst = ctx.get("top_impact", 0) >= 70
+                high_rvol      = rvol >= 2.0
+                unusual_float  = (bool(c_obj.get("_unusual_float", False))
+                                  or bool(c_obj.get("_unusual_short_interest", False)))
+                near_exploratory = local >= 60  # by definition (>= CLAUDE_MIN_LOCAL_SCORE_EXPLORATORY)
+                exploratory_gate_ok = (is_top_gapper or strong_catalyst or high_rvol
+                                       or near_exploratory or unusual_float)
+                if exploratory_gate_ok:
+                    print(f"   [ANALYST] {sym}: local={local} qualifies for exploratory Claude gate "
+                          f"(gapper={is_top_gapper} cat={strong_catalyst} rvol={rvol:.1f} "
+                          f"float={unusual_float})")
+                    ctx["_exploratory_gate_used"] = True
+            if not exploratory_gate_ok:
+                budget["local_rejects"] += 1
+                results[sym] = _make_local_result(ctx, local, news_stats)
+                eff_log.append(_make_eff_entry(sym, local, None, now_str,
+                                               cache_hit=False, local_only=True))
+                continue
 
         cache_key = f"{sym}:{ctx['hash']}"
         if cache_key in score_cache:

@@ -92,8 +92,11 @@ HIGH_VOL_MODERATE_EXTRA_PTS  = 3     # additional score pts on top of HIGH_VOL_M
 HIGH_VOL_MODERATE_SIZE_CUT   = 0.40  # 40% size cut for moderate (vs 30% for mild)
 
 # ── PAPER vs LIVE LOW_VOLUME score thresholds ──────────────────────────────────
-PAPER_LOW_VOLUME_MIN_SCORE = 75   # paper: lower bar, scan more for learning
-LIVE_LOW_VOLUME_MIN_SCORE  = 82   # live: higher conviction required
+# Paper uses two tiers: exploratory (learning) and live-realistic (capital-parity).
+# LIVE threshold is unchanged — capital-protection mode, no relaxations.
+PAPER_EXPLORATORY_LOW_VOLUME_MIN_SCORE    = 70   # score 70-74 → PAPER_EXPLORATORY_ONLY
+PAPER_LIVE_REALISTIC_LOW_VOLUME_MIN_SCORE = 75   # score 75+  → PAPER_LIVE_REALISTIC
+LIVE_LOW_VOLUME_MIN_SCORE                 = 82   # live: higher conviction required (unchanged)
 
 # ── Extreme HIGH_VOL hard stop ────────────────────────────────────────────────
 EXTREME_HIGH_VOL_VIX         = 35.0   # VIX >= this → extreme HIGH_VOL abort
@@ -317,7 +320,10 @@ ATR_MAX_STOP_PCT    = 0.025       # never wider than 2.5%
 TELEMETRY_LOG_FILE = Path(__file__).parent / "execution_telemetry.jsonl"
 
 # ── Claude Token Optimisation ─────────────────────────────────────────────────
-CLAUDE_MIN_LOCAL_SCORE        = 65    # skip Claude if local pre-score is below this
+CLAUDE_MIN_LOCAL_SCORE             = 65   # skip Claude if local pre-score below this (default)
+CLAUDE_MIN_LOCAL_SCORE_EXPLORATORY = 60   # conditional gate: only for top gapper / strong catalyst /
+                                          # RVOL>2.0 / within 10pts of exploratory threshold /
+                                          # unusual float or short-interest. Paper-only.
 ENABLE_CLAUDE_RESCORING       = True  # set False to run on local scores only (zero Claude cost)
 MAX_SYMBOLS_PER_CLAUDE_BATCH  = 12    # max candidates per Claude API call
 ANALYST_SCORE_CACHE_FILE      = Path(__file__).parent / "analyst_score_cache.json"
