@@ -12,6 +12,7 @@ Token-optimised flow:
 import anthropic
 import json
 import hashlib
+import math
 import yfinance as yf
 from datetime import date, datetime
 from config import (
@@ -25,6 +26,7 @@ from config import (
     CLAUDE_CACHE_NEW_CATALYST_INVALIDATE,
     TRACK_CLAUDE_DECISION_DELTA, CLAUDE_EFFECTIVENESS_LOG_FILE,
     REGIME_CACHE_FILE,
+    TRADING_MODE,
     get_min_score,
 )
 from news_feed import get_all_news, news_for_symbol
@@ -132,7 +134,11 @@ def _local_score(c: dict, research: dict) -> int:
 
     bias   = research.get("pre_market_bias", "NEUTRAL")
     rscore = research.get("research_score", 50)
-    if bias == "AVOID":     score = min(score, 45)
+    if bias == "AVOID":
+        if TRADING_MODE == "PAPER":
+            score -= 15   # PAPER: penalise but allow strong setups to reach Claude threshold
+        else:
+            score = min(score, 45)   # LIVE: hard cap — Claude will also cap at 50
     elif bias == "BEARISH": score -= 6
     elif bias == "BULLISH": score += 5
     if rscore < 30:         score -= 5
@@ -145,28 +151,30 @@ def _local_score(c: dict, research: dict) -> int:
 def _candidate_hash(c: dict, top_news: list, research: dict, regime: str) -> str:
     """Cache key using config-driven buckets.
 
-    Bucket sizes are chosen so that changes beyond the configured invalidation
-    thresholds land in a different bucket (= different hash = automatic cache miss).
-    The snapshot check in _should_invalidate() catches edge cases within a bucket.
+    Price is bucketed on a log scale so that a move of CLAUDE_CACHE_PRICE_MOVE_INVALIDATE_PCT%
+    from the last-scored price lands in the next bucket and triggers a cache miss.
     """
     rvol = c.get("rel_volume", 0)
-    # RVOL bucket: ~25% relative change → 0.5 absolute bucket at RVOL 2.0
     rvol_bucket = max(round(rvol * CLAUDE_CACHE_RVOL_CHANGE_INVALIDATE_PCT / 100 * 2) / 2, 0.25)
 
+    # Log-scale price bucket: each bucket ≈ CLAUDE_CACHE_PRICE_MOVE_INVALIDATE_PCT% wide
+    price = c.get("price", 0)
+    log_step = math.log(1 + CLAUDE_CACHE_PRICE_MOVE_INVALIDATE_PCT / 100)
+    price_bucket = int(math.log(price) / log_step) if price > 0 else 0
+
     key = {
-        "gap":      round(c.get("gap_pct", 0) / 0.5) * 0.5,
-        "move":     round(c.get("move_from_open", 0) / CLAUDE_CACHE_PRICE_MOVE_INVALIDATE_PCT)
-                    * CLAUDE_CACHE_PRICE_MOVE_INVALIDATE_PCT,
-        "rvol":     round(rvol / rvol_bucket) * rvol_bucket,
-        "spread":   round(c.get("spread_pct", 0), 2),
-        "bvwap":    c.get("below_vwap", False),
-        "vtrend":   round(c.get("vol_trend_ratio", 1.0), 1),
-        "impact":   top_news[0]["impact"] if top_news else 0,
-        "headline": (top_news[0]["headline"][:60] if top_news else "")
-                    if CLAUDE_CACHE_NEW_CATALYST_INVALIDATE else "",
-        "bias":     research.get("pre_market_bias", "NEUTRAL"),
-        "rscore":   research.get("research_score", 50),
-        "regime":   regime if CLAUDE_CACHE_REGIME_CHANGE_INVALIDATE else "",
+        "gap":          round(c.get("gap_pct", 0) / 0.5) * 0.5,
+        "price_bucket": price_bucket,
+        "rvol":         round(rvol / rvol_bucket) * rvol_bucket,
+        "spread":       round(c.get("spread_pct", 0), 2),
+        "bvwap":        c.get("below_vwap", False),
+        "vtrend":       round(c.get("vol_trend_ratio", 1.0), 1),
+        "impact":       top_news[0]["impact"] if top_news else 0,
+        "headline":     (top_news[0]["headline"][:60] if top_news else "")
+                        if CLAUDE_CACHE_NEW_CATALYST_INVALIDATE else "",
+        "bias":         research.get("pre_market_bias", "NEUTRAL"),
+        "rscore":       research.get("research_score", 50),
+        "regime":       regime if CLAUDE_CACHE_REGIME_CHANGE_INVALIDATE else "",
     }
     return hashlib.md5(json.dumps(key, sort_keys=True).encode()).hexdigest()[:12]
 
@@ -174,7 +182,7 @@ def _candidate_hash(c: dict, top_news: list, research: dict, regime: str) -> str
 def _build_snap(c: dict, top_news: list, regime: str) -> dict:
     """Snapshot of values stored in cache entry for secondary invalidation check."""
     return {
-        "move":     c.get("move_from_open", 0),
+        "price":    c.get("price", 0),      # actual price at scoring time (not move_from_open)
         "rvol":     c.get("rel_volume", 0),
         "spread":   c.get("spread_pct", 0),
         "headline": top_news[0]["headline"][:60] if top_news else "",
@@ -183,14 +191,17 @@ def _build_snap(c: dict, top_news: list, regime: str) -> dict:
 
 
 def _should_invalidate(snap: dict, c: dict, top_news: list, regime: str) -> bool:
-    """Secondary check: bust cache if values shifted materially within a hash bucket."""
-    cur_move   = c.get("move_from_open", 0)
+    """Secondary check: bust cache if values shifted materially since last scoring."""
+    cur_price  = c.get("price", 0)
     cur_rvol   = c.get("rel_volume", 0)
     cur_spread = c.get("spread_pct", 0)
     cur_head   = top_news[0]["headline"][:60] if top_news else ""
 
-    if abs(cur_move - snap.get("move", cur_move)) > CLAUDE_CACHE_PRICE_MOVE_INVALIDATE_PCT:
-        return True
+    # Price change from last-scored price (not move_from_open)
+    snap_price = snap.get("price", 0)
+    if cur_price > 0 and snap_price > 0:
+        if abs(cur_price - snap_price) / snap_price * 100 > CLAUDE_CACHE_PRICE_MOVE_INVALIDATE_PCT:
+            return True
 
     old_rvol = snap.get("rvol", cur_rvol)
     if old_rvol > 0:
@@ -295,6 +306,10 @@ def _call_claude(
             "rscore": r.get("research_score", 50),
             "rflags": r.get("red_flags", []),
         })
+
+    # In PAPER mode, lift the AVOID hard-cap so experimental trades can be researched
+    if TRADING_MODE == "PAPER" and any(ctx["research"].get("pre_market_bias") == "AVOID" for ctx in batch_ctx):
+        context_lines.append("PAPER_RESEARCH: AVOID bias = caution flag only — score objectively, no hard score cap")
 
     prompt = (
         "\n".join(context_lines) + "\n\n"
@@ -419,15 +434,22 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
                     flags     = p.get("red_flags", [])
                     p["reasoning"] = "; ".join(reasons + [f"⚠ {f}" for f in flags]) or "no detail"
                     cache_key = f"{sym}:{ctx['hash']}"
-                    # Store snap and decision metadata in cache entry
                     cache_entry = {k: v for k, v in p.items() if not k.startswith("_")}
                     cache_entry["_snap"]         = ctx["snap"]
                     cache_entry["_local_score"]  = ctx["local_score"]
                     changed = (ctx["local_score"] >= MIN_SCORE_TO_TRADE) != (p.get("score", 0) >= MIN_SCORE_TO_TRADE)
                     cache_entry["_claude_changed_decision"] = changed
                     score_cache[cache_key] = cache_entry
-                    results[sym] = {**p, "_news_stats": news_stats,
-                                    "_top_news_impact": ctx["top_impact"]}
+                    result_entry = {**p, "_news_stats": news_stats, "_top_news_impact": ctx["top_impact"]}
+                    # PAPER AVOID override: tag if quality conditions are met for experimental trading
+                    c_orig = ctx["c"]
+                    if (TRADING_MODE == "PAPER"
+                            and ctx["research"].get("pre_market_bias") == "AVOID"
+                            and c_orig.get("rel_volume", 0) >= 2.5
+                            and c_orig.get("spread_pct", 0) <= 0.15
+                            and ctx["top_impact"] >= 70):
+                        result_entry["research_avoid_override_pending"] = True
+                    results[sym] = result_entry
                     eff_log.append(_make_eff_entry(sym, ctx["local_score"],
                                                    p.get("score"), now_str,
                                                    cache_hit=False, local_only=False))

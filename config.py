@@ -62,9 +62,9 @@ DB_PATH = Path(__file__).parent / "daytrades.db"
 REGIME_CACHE_MINS            = 15   # re-detect every 15 min
 EARLY_SESSION_GRACE_MINS     = 45   # skip vol-based NO_TRADE in first 45 min after open (9:30-10:15 ET)
 SPY_TREND_DAYS     = 3           # rolling days for SPY trend calculation
-TRADEABLE_REGIMES  = ["TRENDING_UP", "CHOPPY", "LOW_VOLUME"]
-# HIGH_VOL and TRENDING_DOWN are both blocked; LOW_VOLUME triggers REDUCED_RISK mode
-# LOW_VOLUME now triggers REDUCED_RISK mode instead of full abort — see below
+TRADEABLE_REGIMES  = ["TRENDING_UP", "CHOPPY", "LOW_VOLUME", "HIGH_VOL"]
+# TRENDING_DOWN is blocked; LOW_VOLUME and HIGH_VOL both trigger REDUCED_RISK mode
+# HIGH_VOL: only aborts if extreme (ATR > HIGH_VOL_ABORT_ATR_PCT AND VIX > HIGH_VOL_ABORT_VIX)
 
 # ── LOW_VOLUME adaptive thresholds ─────────────────────────────────────────────
 # vol_ratio below ABORT → genuine liquidity collapse → NO_TRADE (full abort)
@@ -75,6 +75,17 @@ LOW_VOLUME_MAX_TRADES   = 1      # cap new entries at 1 per scan cycle
 LOW_VOLUME_STOCK_RVOL   = 1.5    # stock must show ≥ this RVOL to trade
 LOW_VOLUME_EXCEPTIONAL_SCORE = 90     # score at/above this exempts from RVOL requirement
 LOW_VOLUME_EXCEPTIONAL_NEWS  = 65     # news impact at/above this exempts from RVOL requirement
+
+# ── HIGH_VOL REDUCED_RISK thresholds ──────────────────────────────────────────
+# atr_pct > 2.0: HIGH_VOL → REDUCED_RISK (smaller size, higher bar, ORB/gap setups only)
+# atr_pct > ABORT_ATR AND VIX > ABORT_VIX: extreme — abort all trading
+HIGH_VOL_ABORT_ATR_PCT   = 3.5   # extreme volatility abort threshold (ATR % of price)
+HIGH_VOL_ABORT_VIX       = 30    # extreme volatility abort VIX threshold (both required)
+HIGH_VOL_MAX_TRADES      = 1     # cap new entries at 1 per scan cycle in HIGH_VOL mode
+HIGH_VOL_STOCK_RVOL      = 2.0   # stock RVOL >= this required in HIGH_VOL mode
+HIGH_VOL_SIZE_CUT        = 0.30  # reduce position size by 30% in HIGH_VOL mode
+HIGH_VOL_MIN_SCORE_EXTRA = 5     # require effective_min + this extra score in HIGH_VOL mode
+HIGH_VOL_ALLOWED_SETUPS  = ["orb_breakout", "gap_and_go", "news_momentum"]
 
 # ── Dynamic Sizing ─────────────────────────────────────────────────────────────
 MIN_POSITION_SIZE_PCT      = 0.10   # floor — never size below 10% of portfolio
@@ -306,6 +317,7 @@ else:
 MIN_SCORE_TO_TRADE    = _mode.SCORE_THRESHOLDS["base"]
 CHOPPY_MIN_SCORE      = _mode.SCORE_THRESHOLDS["CHOPPY"]
 LOW_VOLUME_MIN_SCORE  = _mode.SCORE_THRESHOLDS["LOW_VOLUME"]
+HIGH_VOL_MIN_SCORE    = _mode.SCORE_THRESHOLDS.get("HIGH_VOL", 80)
 CANDIDATE_EXPIRY_MINS = _mode.CANDIDATE_EXPIRY_MINS
 
 # Quality override parameters

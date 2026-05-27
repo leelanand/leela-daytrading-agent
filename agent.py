@@ -30,8 +30,11 @@ from config import (
     MIN_MOMENTUM_TO_TRADE,
     LOW_VOLUME_MIN_SCORE, LOW_VOLUME_MAX_TRADES,
     LOW_VOLUME_STOCK_RVOL, LOW_VOLUME_EXCEPTIONAL_SCORE, LOW_VOLUME_EXCEPTIONAL_NEWS,
+    HIGH_VOL_MIN_SCORE, HIGH_VOL_MAX_TRADES, HIGH_VOL_STOCK_RVOL,
+    HIGH_VOL_SIZE_CUT, HIGH_VOL_MIN_SCORE_EXTRA, HIGH_VOL_ALLOWED_SETUPS,
     CHAOS_LOCKOUT_END_ET,
     TIER_HIGH_MIN, TIER_ELITE_MIN, ELITE_SIZE_BOOST, MAX_POSITION_SIZE_PCT,
+    MIN_POSITION_SIZE_PCT, DAILY_LOSS_LIMIT, MAX_POSITIONS,
     TAKE_PROFIT_PCT,
     get_min_score,
     LIVE_BASE_SCORE,
@@ -52,7 +55,7 @@ from risk import (
 )
 from logger import init_db, log_audit, log_paper_trade, today_summary, all_time_summary, log_telemetry
 from candidates import save_candidates, load_valid_candidates
-from regime import detect_regime, is_tradeable, get_regime_context, LOW_VOLUME, CHOPPY
+from regime import detect_regime, is_tradeable, get_regime_context, LOW_VOLUME, CHOPPY, HIGH_VOL
 from sizing import dynamic_position_size
 from exits import record_entry, monitor_positions
 from momentum import analyse_momentum, STRENGTHENING, STABLE
@@ -81,6 +84,21 @@ ET = ZoneInfo("America/New_York")
 
 
 # ── Mode helpers ──────────────────────────────────────────────────────────────
+
+def _reject(symbol: str, score: int, setup_type: str, stage: str, rule: str,
+            observed=None, threshold=None, is_experimental: bool = False):
+    """Log a precise trade rejection with stage/rule/observed/threshold details."""
+    log_audit("TRADE_REJECTED", symbol, {
+        "score":           score,
+        "setup_type":      setup_type,
+        "trading_mode":    TRADING_MODE,
+        "stage_rejected":  stage,
+        "rule_failed":     rule,
+        "observed_value":  observed,
+        "threshold_value": threshold,
+        "is_experimental": is_experimental,
+    })
+
 
 def _apply_score_decay(score: int, age_mins: float) -> tuple[int, int]:
     """Returns (decayed_score, decay_points). Decay increases with candidate age."""
@@ -118,17 +136,19 @@ def _quality_override(
         "momentum_ok":   mom_ok,
         "no_failed_bo":  no_failed_bo,
     }
-    met = sum(v for v in conditions.values())
+    met    = sum(v for v in conditions.values())
+    failed = [k for k, v in conditions.items() if not v]
 
     if QUALITY_OVERRIDE_REQUIRE_ALL:
         allowed = all(conditions.values())
     else:
-        allowed = met >= QUALITY_OVERRIDE_MIN_CONDITIONS
+        # PAPER 5/7 mode: RVOL, spread, and momentum are always mandatory
+        mandatory_met = conditions["rvol_strong"] and conditions["tight_spread"] and conditions["momentum_ok"]
+        allowed = met >= QUALITY_OVERRIDE_MIN_CONDITIONS and mandatory_met
 
     if allowed:
         return True, f"quality_override: {met}/7 conditions met"
-    failed = [k for k, v in conditions.items() if not v]
-    return False, f"quality_override failed ({met}/7) — missing: {failed}"
+    return False, f"quality_override_failed: {met}/7 — missing: {failed[:3]}"
 
 
 def _score_band(score: int) -> str:
@@ -141,6 +161,50 @@ def _score_band(score: int) -> str:
 
 def _client() -> TradingClient:
     return TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=PAPER_TRADING)
+
+
+def _pre_submit_check(symbol: str, intended_price: float, intended_spread: float,
+                      portfolio: float) -> tuple[bool, str]:
+    """Re-check 9 conditions immediately before order submission."""
+    # 1. Halt status (fast re-check)
+    try:
+        halted, halt_desc = check_halt(symbol)
+        if halted:
+            return False, f"halt: {halt_desc}"
+    except Exception:
+        pass
+
+    # 2. Cross-agent lock re-check (may have changed in last few seconds)
+    taken, holder = is_symbol_taken(symbol)
+    if taken:
+        return False, f"cross_agent_lock: claimed by {holder}"
+
+    # 3–5. Portfolio state (buying power, daily loss, position count)
+    ok, _, reason = can_trade()
+    if not ok:
+        return False, f"portfolio: {reason}"
+
+    try:
+        client = _client()
+
+        # 6. Duplicate open order check
+        open_orders = client.get_orders()
+        dupes = [o for o in open_orders if hasattr(o, "symbol") and o.symbol == symbol]
+        if dupes:
+            return False, f"duplicate_order: {len(dupes)} order(s) already open for {symbol}"
+
+        # 7. Spread / price freshness via account quote check
+        acct = client.get_account()
+        bp   = float(acct.buying_power or 0)
+        min_cost = intended_price * max(1, int(portfolio * MIN_POSITION_SIZE_PCT / max(intended_price, 0.01)))
+        if bp < min_cost:
+            return False, f"buying_power: ${bp:.0f} < min_cost ${min_cost:.0f}"
+
+        # 8–9. Daily loss and max positions already covered by can_trade() above
+    except Exception:
+        pass  # non-blocking — don't fail a good trade on check errors
+
+    return True, "ok"
 
 
 def _market_open() -> bool:
@@ -240,7 +304,8 @@ def _prescan():
         log_audit("PRESCAN_SKIPPED", details={"reason": f"regime={regime}"})
         return
 
-    low_vol_mode = (regime == LOW_VOLUME)
+    low_vol_mode  = (regime == LOW_VOLUME)
+    high_vol_mode = (regime == HIGH_VOL)
     if low_vol_mode:
         ctx = get_regime_context()
         print(f"   [LOW_VOLUME] REDUCED_RISK mode active — restrictions at scan time:")
@@ -255,6 +320,21 @@ def _prescan():
                 "min_rvol":    LOW_VOLUME_STOCK_RVOL,
                 "max_trades":  LOW_VOLUME_MAX_TRADES,
                 "size_cut":    "50%",
+            },
+            **ctx,
+        })
+    elif high_vol_mode:
+        ctx = get_regime_context()
+        print(f"   [HIGH_VOL] REDUCED_RISK prescan — score>={HIGH_VOL_MIN_SCORE}+{HIGH_VOL_MIN_SCORE_EXTRA}  "
+              f"setups={HIGH_VOL_ALLOWED_SETUPS}")
+        log_audit("HIGH_VOL_MODE", details={
+            "restrictions": {
+                "min_score_base": HIGH_VOL_MIN_SCORE,
+                "extra_pts":      HIGH_VOL_MIN_SCORE_EXTRA,
+                "min_rvol":       HIGH_VOL_STOCK_RVOL,
+                "max_trades":     HIGH_VOL_MAX_TRADES,
+                "size_cut":       f"{HIGH_VOL_SIZE_CUT:.0%}",
+                "allowed_setups": HIGH_VOL_ALLOWED_SETUPS,
             },
             **ctx,
         })
@@ -359,7 +439,8 @@ def _scan_and_trade(paper_mode: bool = False):
         log_audit("SCAN_SKIPPED", details={"reason": f"regime={regime}"})
         return
 
-    low_vol_mode = (regime == LOW_VOLUME)
+    low_vol_mode  = (regime == LOW_VOLUME)
+    high_vol_mode = (regime == HIGH_VOL)
     if low_vol_mode:
         ctx = get_regime_context()
         print(f"   [LOW_VOLUME] REDUCED_RISK: score>={LOW_VOLUME_MIN_SCORE}  "
@@ -369,6 +450,20 @@ def _scan_and_trade(paper_mode: bool = False):
             "min_rvol":   LOW_VOLUME_STOCK_RVOL,
             "max_trades": LOW_VOLUME_MAX_TRADES,
             "size_cut":   "50%",
+        }, **ctx})
+    elif high_vol_mode:
+        ctx = get_regime_context()
+        hv_min = HIGH_VOL_MIN_SCORE
+        print(f"   [HIGH_VOL] REDUCED_RISK: score>={hv_min}+{HIGH_VOL_MIN_SCORE_EXTRA}  "
+              f"RVOL>={HIGH_VOL_STOCK_RVOL}x  max {HIGH_VOL_MAX_TRADES} trade  "
+              f"size-{HIGH_VOL_SIZE_CUT:.0%}  setups={HIGH_VOL_ALLOWED_SETUPS}")
+        log_audit("HIGH_VOL_MODE", details={"restrictions": {
+            "min_score_base":  hv_min,
+            "extra_pts":       HIGH_VOL_MIN_SCORE_EXTRA,
+            "min_rvol":        HIGH_VOL_STOCK_RVOL,
+            "max_trades":      HIGH_VOL_MAX_TRADES,
+            "size_cut":        f"{HIGH_VOL_SIZE_CUT:.0%}",
+            "allowed_setups":  HIGH_VOL_ALLOWED_SETUPS,
         }, **ctx})
 
     # Intraday alignment check (real-time SPY direction)
@@ -481,10 +576,14 @@ def _scan_and_trade(paper_mode: bool = False):
             print(f"   [RISK] {reason} — stopping.")
             break
 
-        # LOW_VOLUME cap — stop after max allowed trades for this scan cycle
+        # LOW_VOLUME / HIGH_VOL trade caps
         if low_vol_mode and trades_this_scan >= LOW_VOLUME_MAX_TRADES:
             print(f"   [LOW_VOLUME] {LOW_VOLUME_MAX_TRADES} trade cap reached — stopping scan.")
             log_audit("SCAN_CAPPED", details={"reason": "low_volume_max_trades"})
+            break
+        if high_vol_mode and trades_this_scan >= HIGH_VOL_MAX_TRADES:
+            print(f"   [HIGH_VOL] {HIGH_VOL_MAX_TRADES} trade cap reached — stopping scan.")
+            log_audit("SCAN_CAPPED", details={"reason": "high_vol_max_trades"})
             break
 
         symbol        = pick["symbol"]
@@ -500,6 +599,14 @@ def _scan_and_trade(paper_mode: bool = False):
         # Effective minimum for this regime + setup type
         effective_min = get_min_score(regime, setup_type)
 
+        # HIGH_VOL setup restriction — only ORB/gap/news setups allowed
+        avoid_override_pending = pick.get("research_avoid_override_pending", False)
+        if high_vol_mode and setup_type not in HIGH_VOL_ALLOWED_SETUPS:
+            print(f"   [SKIP] {symbol}: HIGH_VOL mode — setup {setup_type!r} not in allowed setups")
+            _reject(symbol, score, setup_type, "high_vol_gate", "setup_not_allowed",
+                    observed=setup_type, threshold=str(HIGH_VOL_ALLOWED_SETUPS))
+            continue
+
         # Timestamps for telemetry
         signal_ts   = pick.get("shortlisted_at") or pick.get("_prescan_ts")
         decision_ts = datetime.now(ET).isoformat()
@@ -507,77 +614,74 @@ def _scan_and_trade(paper_mode: bool = False):
         # Tier classification (spec point 5)
         tier = get_setup_tier(score)
 
+        is_experimental = score < LIVE_BASE_SCORE
+
         # Cross-agent duplicate check — block if IBKR already holds this symbol
         taken, holder = is_symbol_taken(symbol)
         if taken:
             print(f"   [SKIP] {symbol}: already held by {holder} agent — duplicate exposure blocked")
-            log_audit("TRADE_REJECTED", symbol, {
-                "score": score, "reason": f"duplicate_exposure:{holder}",
-                "setup_type": setup_type,
-            })
+            _reject(symbol, score, setup_type, "cross_agent_gate", "duplicate_exposure",
+                    observed=holder, is_experimental=is_experimental)
             continue
 
         # Event risk: hard-block on imminent earnings or halt
         earn_block, earn_desc = check_earnings(symbol)
         if earn_block:
             print(f"   [SKIP] {symbol}: event risk — {earn_desc}")
-            log_audit("TRADE_REJECTED", symbol, {
-                "score": score, "reason": f"earnings_block: {earn_desc}",
-                "setup_type": setup_type,
-            })
+            _reject(symbol, score, setup_type, "event_risk_gate", "earnings_block",
+                    observed=earn_desc, is_experimental=is_experimental)
             continue
         halted, halt_desc = check_halt(symbol)
         if halted:
             print(f"   [SKIP] {symbol}: {halt_desc}")
-            log_audit("TRADE_REJECTED", symbol, {
-                "score": score, "reason": f"halt: {halt_desc}",
-                "setup_type": setup_type,
-            })
+            _reject(symbol, score, setup_type, "event_risk_gate", "halt",
+                    observed=halt_desc, is_experimental=is_experimental)
             continue
 
-        # Score gate — hard reject if gap exceeds quality-override ceiling; otherwise fall
-        # through to the quality override check below (which needs ORB/pullback results)
+        # Score gate — hard reject if gap exceeds QO ceiling; AVOID override bypasses for PAPER
         score_below_min = score < effective_min
-        if score_below_min:
+        if score_below_min and not avoid_override_pending:
             gap = effective_min - score
             if gap > QUALITY_OVERRIDE_MAX_GAP_PTS:
-                log_audit("TRADE_REJECTED", symbol, {
-                    "score": score, "effective_min": effective_min,
-                    "regime": regime, "setup_type": setup_type,
-                    "reason": f"score {score} < {effective_min}, gap {gap}pts > QO ceiling {QUALITY_OVERRIDE_MAX_GAP_PTS}",
-                })
+                _reject(symbol, score, setup_type, "score_gate", "score_below_min",
+                        observed=score, threshold=effective_min,
+                        is_experimental=is_experimental)
                 print(f"   [SKIP] {symbol}: score {score} < {effective_min}, gap {gap}pts exceeds QO ceiling")
                 continue
             print(f"   [BELOW-MIN] {symbol}: score {score} < {effective_min} (gap {gap}pts ≤ QO ceiling) — quality override pending")
 
-        # LOW_VOLUME confidence gate — require higher score than normal
+        # HIGH_VOL extra score requirement (above effective_min)
+        hv_required = effective_min + HIGH_VOL_MIN_SCORE_EXTRA
+        if high_vol_mode and score < hv_required:
+            print(f"   [SKIP] {symbol}: HIGH_VOL requires score>={hv_required} (got {score})")
+            _reject(symbol, score, setup_type, "high_vol_gate", "high_vol_min_score",
+                    observed=score, threshold=hv_required, is_experimental=is_experimental)
+            continue
+
+        # LOW_VOLUME confidence gate
         if low_vol_mode and score < LOW_VOLUME_MIN_SCORE:
             print(f"   [SKIP] {symbol}: LOW_VOLUME mode requires score>={LOW_VOLUME_MIN_SCORE} "
                   f"(got {score})")
-            log_audit("TRADE_REJECTED", symbol, {
-                "score": score,
-                "reason": f"low_volume_min_score: {score}<{LOW_VOLUME_MIN_SCORE}",
-                "setup_type": setup_type,
-            })
+            _reject(symbol, score, setup_type, "low_vol_gate", "low_volume_min_score",
+                    observed=score, threshold=LOW_VOLUME_MIN_SCORE,
+                    is_experimental=is_experimental)
             continue
 
         # Risk gate
         risk_ok, risk_reason = check_candidate_risk(pick, portfolio, prescan_price)
         if not risk_ok:
             print(f"   [SKIP] {symbol}: {risk_reason}")
-            log_audit("TRADE_REJECTED", symbol, {
-                "score": score, "reason": risk_reason, "setup_type": setup_type,
-            })
+            _reject(symbol, score, setup_type, "risk_gate", risk_reason,
+                    is_experimental=is_experimental)
             continue
 
         # Momentum analysis — 1-min bars check (fresh, per symbol)
         mom = analyse_momentum(symbol)
         print(f"   Momentum {symbol}: {mom['strength']} — {mom['reason']}")
         if mom["strength"] not in MIN_MOMENTUM_TO_TRADE:
-            log_audit("TRADE_REJECTED", symbol, {
-                "score": score, "reason": f"momentum={mom['strength']}: {mom['reason']}",
-                "setup_type": setup_type,
-            })
+            _reject(symbol, score, setup_type, "momentum_gate", "momentum_weak",
+                    observed=mom["strength"], threshold=str(MIN_MOMENTUM_TO_TRADE),
+                    is_experimental=is_experimental)
             print(f"   [SKIP] {symbol}: momentum {mom['strength']} — not tradeable")
             continue
 
@@ -607,10 +711,9 @@ def _scan_and_trade(paper_mode: bool = False):
         vol_extended, vol_ext_reason = check_volatility_extension(price, vwap, bars_1min)
         if vol_extended:
             print(f"   [SKIP] {symbol}: {vol_ext_reason}")
-            log_audit("TRADE_REJECTED", symbol, {
-                "score": score, "reason": f"vol_extension: {vol_ext_reason}",
-                "setup_type": setup_type,
-            })
+            _reject(symbol, score, setup_type, "volatility_gate", "vol_extension",
+                    observed=vol_ext_reason, is_experimental=is_experimental)
+            log_feed_event("TRADE_REJECTED_DATA", {"symbol": symbol, "reason": vol_ext_reason})
             continue
 
         # Failed breakout detection (spec point 8)
@@ -618,10 +721,8 @@ def _scan_and_trade(paper_mode: bool = False):
         fb_failed, fb_reason = detect_failed_breakout(bars_1min, breakout_price)
         if fb_failed:
             print(f"   [SKIP] {symbol}: failed breakout — {fb_reason}")
-            log_audit("TRADE_REJECTED", symbol, {
-                "score": score, "reason": f"failed_breakout: {fb_reason}",
-                "setup_type": setup_type,
-            })
+            _reject(symbol, score, setup_type, "breakout_gate", "failed_breakout",
+                    observed=fb_reason, is_experimental=is_experimental)
             continue
 
         # Pullback check (spec point 2) — only for HIGH and ELITE tiers
@@ -634,10 +735,9 @@ def _scan_and_trade(paper_mode: bool = False):
 
             if pullback_result.get("reject"):
                 print(f"   [SKIP] {symbol}: pullback failed — {pullback_result['pullback_reason']}")
-                log_audit("TRADE_REJECTED", symbol, {
-                    "score": score, "reason": f"pullback_reject: {pullback_result['pullback_reason']}",
-                    "setup_type": setup_type, "tier": tier,
-                })
+                _reject(symbol, score, setup_type, "pullback_gate", "pullback_rejected",
+                        observed=pullback_result["pullback_reason"], threshold=tier,
+                        is_experimental=is_experimental)
                 continue
 
             if pullback_result.get("should_wait"):
@@ -662,8 +762,31 @@ def _scan_and_trade(paper_mode: bool = False):
             portfolio, price, score, vol_pct, spread_pct, regime, recent_wr
         )
 
+        # PAPER mode: setup-based sizing bands (experimental → smaller, elite → larger)
+        if TRADING_MODE == "PAPER":
+            if score >= 90:
+                band_min, band_max, band_label = 0.15, 0.25, "PAPER_ELITE"
+            elif score >= 85:
+                band_min, band_max, band_label = 0.15, 0.20, "PAPER_HIGH"
+            elif score >= 72:
+                band_min, band_max, band_label = 0.10, 0.15, "PAPER_NORMAL"
+            else:
+                band_min, band_max, band_label = 0.05, 0.10, "PAPER_EXP"
+            banded_pct = min(band_max, max(band_min, size_pct))
+            if banded_pct != size_pct:
+                shares    = max(1, int(portfolio * banded_pct / price))
+                size_pct  = banded_pct
+                size_note += f" | {band_label}"
+
+        # HIGH_VOL: reduce size by HIGH_VOL_SIZE_CUT (applied after PAPER bands)
+        if high_vol_mode:
+            hv_pct   = max(MIN_POSITION_SIZE_PCT, size_pct * (1 - HIGH_VOL_SIZE_CUT))
+            shares   = max(1, int(portfolio * hv_pct / price))
+            size_pct = hv_pct
+            size_note += f" | HV-{HIGH_VOL_SIZE_CUT:.0%}"
+
         # ELITE size boost (spec point 5) — only if spread tight and market aligned
-        if tier == "ELITE" and spread_pct < 0.15 and alignment in ("BULLISH", "STRONG_BULLISH", "ALIGNED"):
+        if tier == "ELITE" and not high_vol_mode and spread_pct < 0.15 and alignment in ("BULLISH", "STRONG_BULLISH", "ALIGNED"):
             boosted_pct = min(MAX_POSITION_SIZE_PCT, size_pct * (1 + ELITE_SIZE_BOOST))
             if boosted_pct > size_pct:
                 shares   = max(1, int(portfolio * boosted_pct / price))
@@ -685,40 +808,34 @@ def _scan_and_trade(paper_mode: bool = False):
         print(f"   Quality {symbol}: score={iq['score']}/100  {iq['reason']}  [{iq['data_source']}]")
         if not iq["ok"]:
             print(f"   [SKIP] {symbol}: intraday quality {iq['score']}/100 — {iq['reason']}")
-            log_feed_event("TRADE_REJECTED_DATA", {
-                "symbol": symbol,
-                "reason": f"quality_score={iq['score']}: {iq['reason']}",
-            })
-            log_audit("TRADE_REJECTED", symbol, {
-                "score": score,
-                "reason": f"intraday_quality: {iq['reason']}",
-                "setup_type": setup_type,
-            })
+            log_feed_event("TRADE_REJECTED_DATA", {"symbol": symbol, "reason": f"quality_score={iq['score']}: {iq['reason']}"})
+            _reject(symbol, score, setup_type, "quality_gate", "intraday_quality_low",
+                    observed=iq["score"], threshold=40, is_experimental=is_experimental)
             continue
 
+        top_news_impact = pick.get("_top_news_impact", 0)
+
         # LOW_VOLUME stock-level RVOL gate
-        # Exceptional candidate (very high score + strong news) bypasses RVOL check
         if low_vol_mode and iq["rvol"] > 0:
-            top_news_impact = pick.get("_top_news_impact", 0)
-            is_exceptional  = (
-                score >= LOW_VOLUME_EXCEPTIONAL_SCORE
-                or top_news_impact >= LOW_VOLUME_EXCEPTIONAL_NEWS
-            )
+            is_exceptional = (score >= LOW_VOLUME_EXCEPTIONAL_SCORE or top_news_impact >= LOW_VOLUME_EXCEPTIONAL_NEWS)
             if not is_exceptional and iq["rvol"] < LOW_VOLUME_STOCK_RVOL:
                 print(f"   [SKIP] {symbol}: LOW_VOLUME stock RVOL {iq['rvol']:.1f}x "
-                      f"< {LOW_VOLUME_STOCK_RVOL}x required (score={score}, "
-                      f"news_impact={top_news_impact})")
-                log_audit("TRADE_REJECTED", symbol, {
-                    "score": score,
-                    "reason": (f"low_volume_stock_rvol: {iq['rvol']:.1f}x"
-                               f"<{LOW_VOLUME_STOCK_RVOL}x"),
-                    "setup_type": setup_type,
-                })
+                      f"< {LOW_VOLUME_STOCK_RVOL}x required")
+                _reject(symbol, score, setup_type, "low_vol_gate", "low_volume_stock_rvol",
+                        observed=round(iq["rvol"], 2), threshold=LOW_VOLUME_STOCK_RVOL,
+                        is_experimental=is_experimental)
                 continue
             if is_exceptional and iq["rvol"] < LOW_VOLUME_STOCK_RVOL:
                 print(f"   [LOW_VOLUME] {symbol}: RVOL {iq['rvol']:.1f}x below threshold "
-                      f"but EXCEPTIONAL candidate (score={score}, "
-                      f"news={top_news_impact}) — allowing")
+                      f"but EXCEPTIONAL (score={score}, news={top_news_impact}) — allowing")
+
+        # HIGH_VOL stock-level RVOL gate
+        if high_vol_mode and iq["rvol"] > 0 and iq["rvol"] < HIGH_VOL_STOCK_RVOL:
+            print(f"   [SKIP] {symbol}: HIGH_VOL stock RVOL {iq['rvol']:.1f}x < {HIGH_VOL_STOCK_RVOL}x required")
+            _reject(symbol, score, setup_type, "high_vol_gate", "high_vol_stock_rvol",
+                    observed=round(iq["rvol"], 2), threshold=HIGH_VOL_STOCK_RVOL,
+                    is_experimental=is_experimental)
+            continue
 
         # Cross-provider quote validation — compare Alpaca vs Massive/Polygon before executing
         quote_ok, quote_reason, poly_quote = validate_cross_provider(
@@ -727,10 +844,8 @@ def _scan_and_trade(paper_mode: bool = False):
         if not quote_ok:
             print(f"   [DATA QUALITY] {symbol}: {quote_reason}")
             log_feed_event("TRADE_REJECTED_DATA", {"symbol": symbol, "reason": quote_reason})
-            log_audit("TRADE_REJECTED", symbol, {
-                "score": score, "reason": f"data_quality: {quote_reason}",
-                "setup_type": setup_type,
-            })
+            _reject(symbol, score, setup_type, "data_quality_gate", "quote_validation_failed",
+                    observed=quote_reason, is_experimental=is_experimental)
             continue
         if "volume_divergence" in quote_reason:
             log_feed_event("VOLUME_DIVERGENCE", {"symbol": symbol, "detail": quote_reason})
@@ -747,8 +862,31 @@ def _scan_and_trade(paper_mode: bool = False):
             mom_ok=mom["strength"] in MIN_MOMENTUM_TO_TRADE,
             no_failed_bo=not fb_failed,
         )
+        # PAPER AVOID override: finalize after all quality checks
+        research_avoid_override = False
+        if avoid_override_pending and TRADING_MODE == "PAPER":
+            mom_ok_for_override = mom["strength"] in MIN_MOMENTUM_TO_TRADE
+            orb_pb_ok           = orb_breakout or pullback_result.get("pullback_detected", False)
+            if mom_ok_for_override and orb_pb_ok:
+                research_avoid_override = True
+                print(f"   [PAPER_AVOID_OVERRIDE] {symbol}: experimental AVOID override activated "
+                      f"(RVOL/spread/catalyst/momentum/ORB all confirmed)")
+                log_audit("AVOID_OVERRIDE", symbol, {
+                    "score": score, "setup_type": setup_type,
+                    "rvol": round(iq.get("rvol", 0.0), 2),
+                    "spread_pct": spread_pct, "news_impact": pick.get("_top_news_impact", 0),
+                    "trading_mode": TRADING_MODE,
+                })
+            else:
+                print(f"   [SKIP] {symbol}: PAPER AVOID override failed "
+                      f"(mom={mom['strength']}, orb={orb_breakout})")
+                _reject(symbol, score, setup_type, "avoid_override_gate", "avoid_override_conditions_failed",
+                        observed=f"mom={mom['strength']}, orb={orb_breakout}",
+                        is_experimental=True)
+                continue
+
         quality_override_applied = False
-        if score_below_min:
+        if score_below_min and not research_avoid_override:
             if qo_allowed:
                 quality_override_applied = True
                 print(f"   [QUALITY OVERRIDE] {symbol}: {qo_reason}")
@@ -759,46 +897,45 @@ def _scan_and_trade(paper_mode: bool = False):
                 })
             else:
                 print(f"   [SKIP] {symbol}: {qo_reason}")
-                log_audit("TRADE_REJECTED", symbol, {
-                    "score": score, "reason": qo_reason,
-                    "setup_type": setup_type, "effective_min": effective_min,
-                })
+                _reject(symbol, score, setup_type, "quality_override_gate", "quality_override_failed",
+                        observed=qo_reason, threshold=effective_min,
+                        is_experimental=is_experimental)
                 continue
 
-        # Experimental flag — trade is experimental if score is below LIVE baseline
-        is_experimental = score < LIVE_BASE_SCORE
         reason_allowed  = (
+            "avoid_override"       if research_avoid_override else
             "quality_override"     if quality_override_applied else
             "regime_relaxed"       if effective_min < LIVE_BASE_SCORE else
             "threshold_met"
         )
 
         audit_details = {
-            "score":            score,
-            "tier":             tier,
-            "shares":           shares,
-            "price":            price,
-            "cost":             round(cost, 2),
-            "size_pct":         round(size_pct, 3),
-            "sizing":           size_note,
-            "regime":           regime,
-            "alignment":        alignment,
-            "momentum":         mom["strength"],
-            "setup_type":       setup_type,
-            "stop_pct":         round(stop_pct, 4),
-            "atr_stop_pct":     round(atr_stop, 5),
-            "orb_breakout":     orb_breakout,
-            "pullback_quality": pullback_result.get("pullback_quality", "N/A"),
-            "vwap":             vwap,
-            "spread_pct":       spread_pct,
-            "trading_mode":     TRADING_MODE,
-            "effective_min":    effective_min,
-            "quality_override": quality_override_applied,
-            "experimental":     is_experimental,
-            "reason_allowed":   reason_allowed,
-            "decay_points":     pick.get("_decay_points", 0),
-            "age_mins":         round(age_mins, 1),
-            "stale":            is_stale,
+            "score":                  score,
+            "tier":                   tier,
+            "shares":                 shares,
+            "price":                  price,
+            "cost":                   round(cost, 2),
+            "size_pct":               round(size_pct, 3),
+            "sizing":                 size_note,
+            "regime":                 regime,
+            "alignment":              alignment,
+            "momentum":               mom["strength"],
+            "setup_type":             setup_type,
+            "stop_pct":               round(stop_pct, 4),
+            "atr_stop_pct":           round(atr_stop, 5),
+            "orb_breakout":           orb_breakout,
+            "pullback_quality":       pullback_result.get("pullback_quality", "N/A"),
+            "vwap":                   vwap,
+            "spread_pct":             spread_pct,
+            "trading_mode":           TRADING_MODE,
+            "effective_min":          effective_min,
+            "quality_override":       quality_override_applied,
+            "experimental":           is_experimental,
+            "reason_allowed":         reason_allowed,
+            "research_avoid_override": research_avoid_override,
+            "decay_points":           pick.get("_decay_points", 0),
+            "age_mins":               round(age_mins, 1),
+            "stale":                  is_stale,
         }
 
         # Log all feed inputs used for this decision
@@ -832,36 +969,48 @@ def _scan_and_trade(paper_mode: bool = False):
 
         submit_ts = datetime.now(ET).isoformat()
 
+        # Pre-submit sanity check — re-verify 9 conditions immediately before order
+        if not paper_mode:
+            ps_ok, ps_reason = _pre_submit_check(symbol, price, spread_pct, portfolio)
+            if not ps_ok:
+                print(f"   [PRE_SUBMIT_REJECT] {symbol}: {ps_reason}")
+                log_audit("PRE_SUBMIT_REJECT", symbol, {
+                    "reason": ps_reason, "score": score, "setup_type": setup_type,
+                    "trading_mode": TRADING_MODE, "is_experimental": is_experimental,
+                })
+                continue
+
         if paper_mode:
             exp_tag = " [EXPERIMENTAL]" if is_experimental else ""
             qo_tag  = " [QUALITY_OVERRIDE]" if quality_override_applied else ""
+            ao_tag  = " [AVOID_OVERRIDE]" if research_avoid_override else ""
             print(f"   [PAPER] WOULD BUY {symbol}  score={score}/100  tier={tier}  "
                   f"{size_note}  stop={stop_pct:.1%}  setup={setup_type}  "
                   f"orb={'Y' if orb_breakout else 'n'}  pullback={pullback_result.get('pullback_quality','N/A')}"
-                  f"{exp_tag}{qo_tag}")
+                  f"{exp_tag}{qo_tag}{ao_tag}")
             print(f"   [PAPER] {shares}sh @ ${price:.2f} = ${cost:,.0f} | {reasoning}")
             log_paper_trade(symbol, shares, price, "BUY", score, reasoning)
             log_audit("PAPER_TRADE", symbol, audit_details)
-            # Rich experimental tagging for PAPER mode learning
             log_audit("PAPER_TRADE_TAGS", symbol, {
-                "setup_type":       setup_type,
-                "regime":           regime,
-                "score_band":       _score_band(score),
-                "score":            score,
-                "effective_min":    effective_min,
-                "experimental":     is_experimental,
-                "quality_override": quality_override_applied,
-                "reason_allowed":   reason_allowed,
-                "orb_status":       orb_breakout,
-                "pullback_status":  pullback_result.get("pullback_quality", "N/A"),
-                "catalyst_quality": pick.get("_top_news_impact", 0),
-                "vwap_distance_pct": round((price - vwap) / vwap * 100, 3) if vwap else None,
-                "rvol":             round(iq.get("rvol", 0.0), 2),
-                "spread_pct":       spread_pct,
-                "decay_points":     pick.get("_decay_points", 0),
-                "age_mins":         round(age_mins, 1),
-                "stale":            is_stale,
-                "trading_mode":     TRADING_MODE,
+                "setup_type":              setup_type,
+                "regime":                  regime,
+                "score_band":              _score_band(score),
+                "score":                   score,
+                "effective_min":           effective_min,
+                "experimental":            is_experimental,
+                "quality_override":        quality_override_applied,
+                "research_avoid_override": research_avoid_override,
+                "reason_allowed":          reason_allowed,
+                "orb_status":              orb_breakout,
+                "pullback_status":         pullback_result.get("pullback_quality", "N/A"),
+                "catalyst_quality":        pick.get("_top_news_impact", 0),
+                "vwap_distance_pct":       round((price - vwap) / vwap * 100, 3) if vwap else None,
+                "rvol":                    round(iq.get("rvol", 0.0), 2),
+                "spread_pct":              spread_pct,
+                "decay_points":            pick.get("_decay_points", 0),
+                "age_mins":                round(age_mins, 1),
+                "stale":                   is_stale,
+                "trading_mode":            TRADING_MODE,
             })
         else:
             print(f"   BUY {symbol}  score={score}/100  tier={tier}  {size_note}  "

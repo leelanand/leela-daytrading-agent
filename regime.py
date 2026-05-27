@@ -21,6 +21,7 @@ from config import (
     REGIME_CACHE_MINS, EARLY_SESSION_GRACE_MINS,
     SPY_TREND_DAYS, TRADEABLE_REGIMES, REGIME_CACHE_FILE,
     LOW_VOLUME_ABORT_RATIO,
+    HIGH_VOL_ABORT_ATR_PCT, HIGH_VOL_ABORT_VIX,
 )
 
 TRENDING_UP   = "TRENDING_UP"
@@ -162,9 +163,14 @@ def detect_regime() -> tuple[str, str]:
 
         # ── Regime classification ─────────────────────────────────────────────
         if atr_pct > 2.0:
-            regime = HIGH_VOL
-            reason = (f"SPY ATR {atr_pct:.1f}% — elevated volatility "
-                      f"(trade with reduced size)")
+            if atr_pct > HIGH_VOL_ABORT_ATR_PCT and vix > HIGH_VOL_ABORT_VIX:
+                regime = NO_TRADE
+                reason = (f"EXTREME volatility: ATR {atr_pct:.1f}% > {HIGH_VOL_ABORT_ATR_PCT}% "
+                          f"AND VIX {vix:.0f} > {HIGH_VOL_ABORT_VIX} — abort all trading")
+            else:
+                regime = HIGH_VOL
+                reason = (f"SPY ATR {atr_pct:.1f}% — elevated volatility "
+                          f"(REDUCED_RISK: +5pts score req, RVOL>=2x, max 1 trade, size-30%)")
 
         elif effective_vol_ratio < LOW_VOLUME_ABORT_RATIO and not in_early_session:
             # Genuine liquidity collapse — abort all trading
