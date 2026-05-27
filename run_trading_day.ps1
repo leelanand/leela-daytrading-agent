@@ -101,12 +101,13 @@ while ($true) {
     # Stop entering new scans after 20:30 BST (15:30 ET) — let monitor handle final mins
     $scanAllowed = ($hhmm -lt 2030)
 
-    # Afternoon prescan refresh at 18:05 BST (13:05 ET) — fresh RVOL after midday block
-    if (-not $afternoonPrescanDone -and $hhmm -ge 1805 -and $hhmm -lt 1815) {
-        Write-Log "Afternoon session refresh — running prescan with fresh data (18:05 BST / 13:05 ET)..."
+    # Pre-warm at 17:45 BST (12:45 ET) — score fresh candidates during the last 15 min of midday block
+    # so the scan queue is populated the moment the block lifts at 13:00 ET
+    if (-not $afternoonPrescanDone -and $hhmm -ge 1745 -and $hhmm -lt 1800) {
+        Write-Log "Afternoon pre-warm — running prescan during midday block (17:45 BST / 12:45 ET)..."
         Run-Agent @("--prescan")
         $afternoonPrescanDone = $true
-        $lastScan = [DateTime]::MinValue  # trigger immediate scan after refresh
+        $lastScan = [DateTime]::MinValue  # trigger immediate scan when block lifts
     }
 
     if ($scanAllowed -and (($now - $lastScan).TotalMinutes -ge $ScanIntervalM)) {

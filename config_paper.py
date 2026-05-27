@@ -25,6 +25,9 @@ SETUP_THRESHOLDS = {
     "midday_reversal":    76,
     "low_float_squeeze":  80,
     "power_hour":         70,
+    "vwap_reclaim":       70,
+    "orb_continuation":   70,
+    "hod_breakout":       72,
 }
 
 # ── Quality override — allow lower-score trades if objective quality is strong ─

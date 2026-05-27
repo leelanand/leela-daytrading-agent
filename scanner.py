@@ -19,6 +19,31 @@ from gapper import get_daily_gappers
 ET = ZoneInfo("America/New_York")
 
 
+def _is_afternoon() -> bool:
+    return datetime.now(ET).hour >= 12
+
+def _afternoon_min_rvol() -> float:
+    return 1.0 if _is_afternoon() else MIN_REL_VOLUME
+
+def _is_afternoon_continuation(price: float, vwap: float, day_high: float,
+                                open_price: float, rel_volume: float) -> bool:
+    """True if current data fits a VWAP reclaim, ORB continuation, or HOD breakout pattern."""
+    if not _is_afternoon() or price <= 0:
+        return False
+    vwap_is_real = vwap > 0 and abs(vwap - price) / price > 0.0001
+    hod_gap_pct  = (day_high - price) / price * 100 if day_high > 0 else 99
+    move_pct     = (price - open_price) / open_price * 100 if open_price > 0 else 0
+    if vwap_is_real:
+        vwap_gap_pct = (price - vwap) / vwap * 100
+        if 0 <= vwap_gap_pct <= 0.75 and rel_volume >= 0.7:
+            return True
+    if move_pct >= 2.0 and hod_gap_pct <= 0.5 and rel_volume >= 0.7:
+        return True
+    if hod_gap_pct <= 0.3 and rel_volume >= 0.8:
+        return True
+    return False
+
+
 def _snapshots(symbols: list) -> dict:
     client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
     try:
@@ -67,8 +92,22 @@ def _news(symbol: str) -> list[str]:
         return []
 
 
-def _classify_setup(gap_pct: float, rel_volume: float, has_news: bool, vol_trend_ratio: float) -> str:
+def _classify_setup(gap_pct: float, rel_volume: float, has_news: bool, vol_trend_ratio: float,
+                    price: float = 0.0, vwap: float = 0.0,
+                    day_high: float = 0.0, open_price: float = 0.0) -> str:
     """Classify the type of momentum setup for analytics and expectancy tracking."""
+    if _is_afternoon() and price > 0:
+        vwap_is_real = vwap > 0 and abs(vwap - price) / price > 0.0001
+        hod_gap_pct  = (day_high - price) / price * 100 if day_high > 0 else 99
+        move_pct     = (price - open_price) / open_price * 100 if open_price > 0 else 0
+        if vwap_is_real:
+            vwap_gap_pct = (price - vwap) / vwap * 100
+            if 0 <= vwap_gap_pct <= 0.75 and rel_volume >= 0.7:
+                return "vwap_reclaim"
+        if move_pct >= 2.0 and hod_gap_pct <= 0.5 and rel_volume >= 0.7:
+            return "orb_continuation"
+        if hod_gap_pct <= 0.3 and rel_volume >= 0.8:
+            return "hod_breakout"
     if gap_pct >= 2.5 and has_news and rel_volume >= 2.0:
         return "gap_and_go"
     if rel_volume >= 3.0 and not has_news:
@@ -120,7 +159,7 @@ def scan_for_candidates() -> list[dict]:
             projected_vol   = effective_vol * (390 / mins_elapsed)
             vol_trend_ratio = projected_vol / avg_vol if avg_vol and avg_vol > 0 else 0
             rel_volume      = effective_vol / avg_vol if avg_vol and avg_vol > 0 else 0
-            if vol_trend_ratio < MIN_REL_VOLUME:
+            if vol_trend_ratio < _afternoon_min_rvol():
                 continue
 
             # Bid/ask spread
@@ -150,17 +189,19 @@ def scan_for_candidates() -> list[dict]:
             vwap        = float(snap.daily_bar.vwap)  if (snap.daily_bar and hasattr(snap.daily_bar, "vwap") and snap.daily_bar.vwap) else price
             volatility_pct = (day_high - day_low) / price * 100 if price > 0 else 0.0
 
-            # Quality filter: chased-move check — skip if price already ran too far from open
-            move_from_open = (price - open_price) / open_price * 100 if open_price > 0 else 0.0
-            if move_from_open > MAX_MOVE_BEFORE_ENTRY_PCT:
+            # Chased-move check — skip if price ran too far from open
+            # Exception: afternoon continuation setups (VWAP reclaim, ORB, HOD) are supposed to have large moves
+            move_from_open   = (price - open_price) / open_price * 100 if open_price > 0 else 0.0
+            afternoon_cont   = _is_afternoon_continuation(price, vwap, day_high, open_price, rel_volume)
+            if not afternoon_cont and move_from_open > MAX_MOVE_BEFORE_ENTRY_PCT:
                 continue
 
-            # VWAP context flag (not a hard filter — passed to analyst)
             below_vwap = price < vwap if VWAP_PREFERENCE else False
 
             sector     = _sector(symbol)
             news       = _news(symbol)
-            setup_type = _classify_setup(gap_pct, rel_volume, len(news) > 0, vol_trend_ratio)
+            setup_type = _classify_setup(gap_pct, rel_volume, len(news) > 0, vol_trend_ratio,
+                                         price, vwap, day_high, open_price)
 
             candidates.append({
                 "symbol":           symbol,
@@ -181,12 +222,14 @@ def scan_for_candidates() -> list[dict]:
                 "sector":           sector,
                 "news":             news,
                 "has_news":         len(news) > 0,
-                "setup_type":       setup_type,
+                "setup_type":         setup_type,
+                "is_afternoon_setup": afternoon_cont,
             })
         except Exception:
             continue
 
     candidates.sort(key=lambda x: x["gap_pct"] * x["rel_volume"], reverse=True)
+    min_rvol_used = _afternoon_min_rvol()
     print(f"   Found {len(candidates)} momentum candidates "
-          f"(gap >{MIN_GAP_PCT}%, vol >{MIN_REL_VOLUME}x, spread <{MAX_SPREAD_PCT}%)")
+          f"(gap >{MIN_GAP_PCT}%, vol >{min_rvol_used:.1f}x, spread <{MAX_SPREAD_PCT}%)")
     return candidates[:10]

@@ -25,6 +25,9 @@ SETUP_THRESHOLDS = {
     "midday_reversal":    82,
     "low_float_squeeze":  88,
     "power_hour":         76,
+    "vwap_reclaim":       76,
+    "orb_continuation":   76,
+    "hod_breakout":       78,
 }
 
 # ── Quality override — require ALL conditions in LIVE mode ────────────────────
