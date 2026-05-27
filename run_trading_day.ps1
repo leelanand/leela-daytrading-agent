@@ -1,8 +1,9 @@
 # Leela Day Trading Agent — Full Daily Automation
 # Scheduled to run weekdays at 14:30 BST (9:30 ET).
-# Handles prescan → scan loop → monitor loop → force close → EOD reports.
+# Handles research → prescan → scan loop → monitor loop → force close → EOD reports.
 #
 # BST = ET + 5h. All time comparisons use local clock (BST).
+#   9:00 ET = 14:00 BST  pre-market research (fundamentals + Claude brief)
 #   9:33 ET = 14:33 BST  prescan
 #   9:48 ET = 14:48 BST  first scan
 #  12:00 ET = 17:00 BST  midday block begins (agent skips internally)
@@ -45,6 +46,13 @@ function Now-BST-HHMM {
 }
 
 Write-Log "=== Trading day started ==="
+
+# ── Pre-market research: 14:00 BST (9:00 ET) ─────────────────────────────────
+Write-Log "Waiting for research time (14:00 BST / 9:00 ET)..."
+while ((Now-BST-HHMM) -lt 1400) {
+    Start-Sleep -Seconds 20
+}
+Run-Agent @("--research")
 
 # ── Wait for prescan time: 14:33 BST ─────────────────────────────────────────
 Write-Log "Waiting for prescan time (14:33 BST / 9:33 ET)..."

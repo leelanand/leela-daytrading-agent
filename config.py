@@ -51,6 +51,8 @@ CANDIDATE_EXPIRY_MINS = 90     # prescan candidates expire after 90 min
 CANDIDATES_FILE       = Path(__file__).parent / "candidates.json"
 PAPER_TRADES_FILE     = Path(__file__).parent / "paper_trades.json"
 AUDIT_LOG_FILE        = Path(__file__).parent / "audit.log"
+RESEARCH_CACHE_FILE   = Path(__file__).parent / "research_cache.json"
+RESEARCH_CACHE_HOURS  = 8
 
 # ── Database ───────────────────────────────────────────────────────────────────
 DB_PATH = Path(__file__).parent / "daytrades.db"

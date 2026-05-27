@@ -16,6 +16,7 @@ from config import (
 )
 from news_feed import get_all_news, news_for_symbol
 from event_risk import get_risk_summary
+from research import get_research
 
 _client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -39,6 +40,11 @@ Key rules:
 - Economic calendar events (FOMC, CPI, NFP): reduce market_trend_score for all candidates
 - Spike detection: if move_from_open >> gap_pct, the initial move may be a temporary spike
 - news.impact_score >= 60 is strong catalyst; < 30 is weak; weight news_score accordingly
+- pre_market_bias AVOID: hard-cap total score at 50, regardless of momentum or news
+- pre_market_bias BEARISH: reduce market_trend_score by up to 5 points
+- pre_market_bias BULLISH: add up to 5 points to market_trend_score if fundamentals support it
+- research_score < 30: flag as fundamentally weak — reduce news_score if no strong catalyst
+- red_flags present: note each flag in reasoning
 
 Return ALL candidates with scores. Include low-scoring ones.
 Respond with a JSON array only — no markdown, no explanation outside the array."""
@@ -159,24 +165,30 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
             if n["impact_score"] >= NEWS_MIN_IMPACT_SCORE
         ]
 
+        research = get_research(sym)
+
         summary.append({
-            "symbol":          sym,
-            "price":           c["price"],
-            "gap_pct":         c["gap_pct"],
-            "move_from_open":  c.get("move_from_open", 0),
-            "rel_volume":      c["rel_volume"],
-            "vol_trend_ratio": c.get("vol_trend_ratio", 1.0),
-            "today_volume":    c["today_volume"],
-            "spread_pct":      c.get("spread_pct", 0),
-            "volatility_pct":  c.get("volatility_pct", 0),
-            "below_vwap":      c.get("below_vwap", False),
-            "sector":          c.get("sector", "Unknown"),
-            "sector_etf":      SECTOR_ETFS.get(c.get("sector", ""), ""),
-            "news":            top_news,
-            "has_news":        bool(top_news),
-            "top_news_impact": top_news[0]["impact"] if top_news else 0,
-            "earnings_warn":   earn_warns.get(sym, ""),
-            "halted":          sym in risk.get("halts", {}),
+            "symbol":            sym,
+            "price":             c["price"],
+            "gap_pct":           c["gap_pct"],
+            "move_from_open":    c.get("move_from_open", 0),
+            "rel_volume":        c["rel_volume"],
+            "vol_trend_ratio":   c.get("vol_trend_ratio", 1.0),
+            "today_volume":      c["today_volume"],
+            "spread_pct":        c.get("spread_pct", 0),
+            "volatility_pct":    c.get("volatility_pct", 0),
+            "below_vwap":        c.get("below_vwap", False),
+            "sector":            c.get("sector", "Unknown"),
+            "sector_etf":        SECTOR_ETFS.get(c.get("sector", ""), ""),
+            "news":              top_news,
+            "has_news":          bool(top_news),
+            "top_news_impact":   top_news[0]["impact"] if top_news else 0,
+            "earnings_warn":     earn_warns.get(sym, ""),
+            "halted":            sym in risk.get("halts", {}),
+            "research_brief":    research.get("research_brief", ""),
+            "pre_market_bias":   research.get("pre_market_bias", "NEUTRAL"),
+            "research_score":    research.get("research_score", 50),
+            "research_flags":    research.get("red_flags", []),
         })
 
     context_parts = [broad_context, etf_context, econ_block, earn_block]

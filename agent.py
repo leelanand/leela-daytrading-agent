@@ -2,6 +2,7 @@
 Day Trading Agent — intraday momentum, all positions closed by 3:45pm ET.
 
 Modes:
+  --research    9:00am ET  — pre-market fundamentals + Claude brief for full watchlist
   --prescan     9:45am ET  — discover & score candidates, save to JSON, NO orders
   --morning     alias for --prescan (backwards compat)
   --scan        10:00am+   — load prescan candidates, validate, execute
@@ -594,11 +595,17 @@ if __name__ == "__main__":
     parser.add_argument("--report",      action="store_true", help="Basic P&L report (4:00pm ET)")
     parser.add_argument("--performance", action="store_true", help="Full analytics dashboard (4:15pm ET)")
     parser.add_argument("--feedreport",  action="store_true", help="Feed quality report — provider health, mismatches, rejections")
+    parser.add_argument("--research",    action="store_true", help="Pre-market research — fundamentals + Claude brief for all watchlist symbols (9:00am ET)")
     parser.add_argument("--verify",      action="store_true", help="Emergency flatness check at 3:55pm ET — close anything still open")
     parser.add_argument("--status",      action="store_true", help="Current positions and P&L")
     args = parser.parse_args()
 
-    if args.prescan or args.morning:
+    if args.research:
+        _header("PRE-MARKET RESEARCH")
+        from research import run_premarket_research
+        run_premarket_research()
+
+    elif args.prescan or args.morning:
         _header("PRESCAN — no orders placed")
         _status()
         print()
@@ -720,5 +727,5 @@ if __name__ == "__main__":
 
     else:
         print("Usage: python agent.py "
-              "--prescan | --scan | --paper | --monitor | "
+              "--research | --prescan | --scan | --paper | --monitor | "
               "--close | --report | --performance | --feedreport | --status")

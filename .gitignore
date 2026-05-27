@@ -17,3 +17,4 @@ exit_state.json
 intraday_cache.json
 paper_trades.json
 audit.log
+research_cache.json
