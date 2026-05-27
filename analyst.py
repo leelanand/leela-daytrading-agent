@@ -26,7 +26,7 @@ from config import (
     CLAUDE_CACHE_NEW_CATALYST_INVALIDATE,
     TRACK_CLAUDE_DECISION_DELTA, CLAUDE_EFFECTIVENESS_LOG_FILE,
     REGIME_CACHE_FILE,
-    TRADING_MODE,
+    TRADING_MODE, PREFERRED_SPREAD_PCT,
     get_min_score,
 )
 from news_feed import get_all_news, news_for_symbol
@@ -175,6 +175,7 @@ def _candidate_hash(c: dict, top_news: list, research: dict, regime: str) -> str
         "bias":         research.get("pre_market_bias", "NEUTRAL"),
         "rscore":       research.get("research_score", 50),
         "regime":       regime if CLAUDE_CACHE_REGIME_CHANGE_INVALIDATE else "",
+        "setup":        c.get("setup_type", ""),
     }
     return hashlib.md5(json.dumps(key, sort_keys=True).encode()).hexdigest()[:12]
 
@@ -187,6 +188,7 @@ def _build_snap(c: dict, top_news: list, regime: str) -> dict:
         "spread":   c.get("spread_pct", 0),
         "headline": top_news[0]["headline"][:60] if top_news else "",
         "regime":   regime,
+        "setup":    c.get("setup_type", ""),
     }
 
 
@@ -216,6 +218,16 @@ def _should_invalidate(snap: dict, c: dict, top_news: list, regime: str) -> bool
 
     old_spread = snap.get("spread", 0)
     if old_spread > 0 and cur_spread > old_spread * 1.5:  # spread widened 50%+
+        return True
+
+    # Invalidate when spread crosses the preferred band boundary
+    if old_spread > 0:
+        was_preferred = old_spread < PREFERRED_SPREAD_PCT
+        now_preferred = cur_spread < PREFERRED_SPREAD_PCT
+        if was_preferred != now_preferred:
+            return True
+
+    if c.get("setup_type", "") != snap.get("setup", ""):
         return True
 
     return False

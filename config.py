@@ -79,13 +79,34 @@ LOW_VOLUME_EXCEPTIONAL_NEWS  = 65     # news impact at/above this exempts from R
 # ── HIGH_VOL REDUCED_RISK thresholds ──────────────────────────────────────────
 # atr_pct > 2.0: HIGH_VOL → REDUCED_RISK (smaller size, higher bar, ORB/gap setups only)
 # atr_pct > ABORT_ATR AND VIX > ABORT_VIX: extreme — abort all trading
-HIGH_VOL_ABORT_ATR_PCT   = 3.5   # extreme volatility abort threshold (ATR % of price)
-HIGH_VOL_ABORT_VIX       = 30    # extreme volatility abort VIX threshold (both required)
-HIGH_VOL_MAX_TRADES      = 1     # cap new entries at 1 per scan cycle in HIGH_VOL mode
-HIGH_VOL_STOCK_RVOL      = 2.0   # stock RVOL >= this required in HIGH_VOL mode
-HIGH_VOL_SIZE_CUT        = 0.30  # reduce position size by 30% in HIGH_VOL mode
-HIGH_VOL_MIN_SCORE_EXTRA = 5     # require effective_min + this extra score in HIGH_VOL mode
-HIGH_VOL_ALLOWED_SETUPS  = ["orb_breakout", "gap_and_go", "news_momentum"]
+HIGH_VOL_ABORT_ATR_PCT       = 3.5   # extreme volatility abort threshold (ATR % of price)
+HIGH_VOL_ABORT_VIX           = 30    # extreme volatility abort VIX threshold (both required)
+HIGH_VOL_MAX_TRADES          = 1     # cap new entries at 1 per scan cycle in HIGH_VOL mode
+HIGH_VOL_STOCK_RVOL          = 2.0   # stock RVOL >= this required in HIGH_VOL mode
+HIGH_VOL_SIZE_CUT            = 0.30  # reduce position size by 30% in mild HIGH_VOL mode
+HIGH_VOL_MIN_SCORE_EXTRA     = 5     # require effective_min + this extra score in HIGH_VOL mode
+HIGH_VOL_ALLOWED_SETUPS      = ["orb_breakout", "gap_and_go", "news_momentum"]
+# HIGH_VOL severity bands: moderate = ATR >= 2.5%, extreme = ATR > 3.5 AND VIX > 30
+HIGH_VOL_MODERATE_ATR_PCT    = 2.5   # ATR >= this → moderate HIGH_VOL (tighter rules)
+HIGH_VOL_MODERATE_EXTRA_PTS  = 3     # additional score pts on top of HIGH_VOL_MIN_SCORE_EXTRA
+HIGH_VOL_MODERATE_SIZE_CUT   = 0.40  # 40% size cut for moderate (vs 30% for mild)
+
+# ── Preferred spread band ──────────────────────────────────────────────────────
+PREFERRED_SPREAD_PCT    = 0.18   # preferred max — above this is suboptimal but not blocked
+SPREAD_PENALTY_ABOVE    = 0.20   # size penalty applies when spread exceeds this
+SPREAD_SIZE_PENALTY_PCT = 0.25   # reduce size by 25% when spread > SPREAD_PENALTY_ABOVE
+
+# ── Adaptive limit order offset ────────────────────────────────────────────────
+LIMIT_OFFSET_TIGHT_PCT  = 0.0005  # spread < 0.10%: 0.05% limit offset
+LIMIT_OFFSET_NORMAL_PCT = 0.0010  # spread 0.10–0.20%: 0.10% limit offset
+LIMIT_OFFSET_WIDE_PCT   = 0.0015  # spread 0.20–0.30%: 0.15% limit offset
+MAX_LIMIT_SLIPPAGE_PCT  = 0.0020  # hard ceiling on limit offset (0.20%)
+
+# ── LIVE setup promotion framework ────────────────────────────────────────────
+LIVE_PROMOTED_SETUPS = [           # setups with sufficient LIVE performance data
+    "gap_and_go", "orb_breakout", "news_momentum", "pullback",
+]
+LIVE_REQUIRE_PROMOTED_SETUPS = False  # set True once enough LIVE P&L data exists
 
 # ── Dynamic Sizing ─────────────────────────────────────────────────────────────
 MIN_POSITION_SIZE_PCT      = 0.10   # floor — never size below 10% of portfolio

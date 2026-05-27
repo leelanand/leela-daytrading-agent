@@ -44,6 +44,10 @@ from config import (
     QUALITY_OVERRIDE_MIN_RVOL, QUALITY_OVERRIDE_MAX_SPREAD,
     QUALITY_OVERRIDE_NEWS_IMPACT, QUALITY_OVERRIDE_REQUIRE_ALL,
     QUALITY_OVERRIDE_MIN_CONDITIONS, QUALITY_OVERRIDE_MAX_GAP_PTS,
+    PREFERRED_SPREAD_PCT, SPREAD_PENALTY_ABOVE, SPREAD_SIZE_PENALTY_PCT,
+    HIGH_VOL_MODERATE_ATR_PCT, HIGH_VOL_MODERATE_EXTRA_PTS, HIGH_VOL_MODERATE_SIZE_CUT,
+    LIMIT_OFFSET_TIGHT_PCT, LIMIT_OFFSET_NORMAL_PCT, LIMIT_OFFSET_WIDE_PCT, MAX_LIMIT_SLIPPAGE_PCT,
+    LIVE_PROMOTED_SETUPS, LIVE_REQUIRE_PROMOTED_SETUPS,
 )
 from scanner import scan_for_candidates
 from analyst import analyse_candidates
@@ -157,6 +161,16 @@ def _score_band(score: int) -> str:
     if score >= 78: return "normal"
     if score >= 70: return "below_live"
     return "experimental"
+
+
+def _limit_offset(spread_pct: float) -> float:
+    """Adaptive limit offset: tighter spread needs less aggressive overpay."""
+    if spread_pct < 0.10:
+        return LIMIT_OFFSET_TIGHT_PCT
+    elif spread_pct <= 0.20:
+        return LIMIT_OFFSET_NORMAL_PCT
+    else:
+        return LIMIT_OFFSET_WIDE_PCT
 
 
 def _client() -> TradingClient:
@@ -327,14 +341,19 @@ def _prescan():
         ctx = get_regime_context()
         print(f"   [HIGH_VOL] REDUCED_RISK prescan — score>={HIGH_VOL_MIN_SCORE}+{HIGH_VOL_MIN_SCORE_EXTRA}  "
               f"setups={HIGH_VOL_ALLOWED_SETUPS}")
+        print(f"     severity bands: mild ATR<{HIGH_VOL_MODERATE_ATR_PCT}% size-{HIGH_VOL_SIZE_CUT:.0%}  "
+              f"moderate ATR>={HIGH_VOL_MODERATE_ATR_PCT}% size-{HIGH_VOL_MODERATE_SIZE_CUT:.0%}+{HIGH_VOL_MODERATE_EXTRA_PTS}pts")
         log_audit("HIGH_VOL_MODE", details={
             "restrictions": {
-                "min_score_base": HIGH_VOL_MIN_SCORE,
-                "extra_pts":      HIGH_VOL_MIN_SCORE_EXTRA,
-                "min_rvol":       HIGH_VOL_STOCK_RVOL,
-                "max_trades":     HIGH_VOL_MAX_TRADES,
-                "size_cut":       f"{HIGH_VOL_SIZE_CUT:.0%}",
-                "allowed_setups": HIGH_VOL_ALLOWED_SETUPS,
+                "min_score_base":    HIGH_VOL_MIN_SCORE,
+                "extra_pts":         HIGH_VOL_MIN_SCORE_EXTRA,
+                "min_rvol":          HIGH_VOL_STOCK_RVOL,
+                "max_trades":        HIGH_VOL_MAX_TRADES,
+                "size_cut_mild":     f"{HIGH_VOL_SIZE_CUT:.0%}",
+                "size_cut_moderate": f"{HIGH_VOL_MODERATE_SIZE_CUT:.0%}",
+                "moderate_atr_pct":  HIGH_VOL_MODERATE_ATR_PCT,
+                "moderate_extra_pts": HIGH_VOL_MODERATE_EXTRA_PTS,
+                "allowed_setups":    HIGH_VOL_ALLOWED_SETUPS,
             },
             **ctx,
         })
@@ -456,14 +475,18 @@ def _scan_and_trade(paper_mode: bool = False):
         hv_min = HIGH_VOL_MIN_SCORE
         print(f"   [HIGH_VOL] REDUCED_RISK: score>={hv_min}+{HIGH_VOL_MIN_SCORE_EXTRA}  "
               f"RVOL>={HIGH_VOL_STOCK_RVOL}x  max {HIGH_VOL_MAX_TRADES} trade  "
-              f"size-{HIGH_VOL_SIZE_CUT:.0%}  setups={HIGH_VOL_ALLOWED_SETUPS}")
+              f"size-{HIGH_VOL_SIZE_CUT:.0%} (mild) / size-{HIGH_VOL_MODERATE_SIZE_CUT:.0%} (moderate)  "
+              f"setups={HIGH_VOL_ALLOWED_SETUPS}")
         log_audit("HIGH_VOL_MODE", details={"restrictions": {
-            "min_score_base":  hv_min,
-            "extra_pts":       HIGH_VOL_MIN_SCORE_EXTRA,
-            "min_rvol":        HIGH_VOL_STOCK_RVOL,
-            "max_trades":      HIGH_VOL_MAX_TRADES,
-            "size_cut":        f"{HIGH_VOL_SIZE_CUT:.0%}",
-            "allowed_setups":  HIGH_VOL_ALLOWED_SETUPS,
+            "min_score_base":    hv_min,
+            "extra_pts":         HIGH_VOL_MIN_SCORE_EXTRA,
+            "min_rvol":          HIGH_VOL_STOCK_RVOL,
+            "max_trades":        HIGH_VOL_MAX_TRADES,
+            "size_cut_mild":     f"{HIGH_VOL_SIZE_CUT:.0%}",
+            "size_cut_moderate": f"{HIGH_VOL_MODERATE_SIZE_CUT:.0%}",
+            "moderate_atr_pct":  HIGH_VOL_MODERATE_ATR_PCT,
+            "moderate_extra_pts": HIGH_VOL_MODERATE_EXTRA_PTS,
+            "allowed_setups":    HIGH_VOL_ALLOWED_SETUPS,
         }, **ctx})
 
     # Intraday alignment check (real-time SPY direction)
@@ -667,6 +690,14 @@ def _scan_and_trade(paper_mode: bool = False):
                     is_experimental=is_experimental)
             continue
 
+        # LOW_VOLUME spread gate — spread must be tight in low-vol sessions
+        if low_vol_mode and spread_pct > PREFERRED_SPREAD_PCT:
+            print(f"   [SKIP] {symbol}: LOW_VOLUME spread {spread_pct:.3%} > preferred {PREFERRED_SPREAD_PCT:.3%}")
+            _reject(symbol, score, setup_type, "low_vol_gate", "spread_above_preferred",
+                    observed=round(spread_pct, 4), threshold=PREFERRED_SPREAD_PCT,
+                    is_experimental=is_experimental)
+            continue
+
         # Risk gate
         risk_ok, risk_reason = check_candidate_risk(pick, portfolio, prescan_price)
         if not risk_ok:
@@ -752,11 +783,34 @@ def _scan_and_trade(paper_mode: bool = False):
             pq = pullback_result.get("pullback_quality", "NONE")
             print(f"   Pullback {symbol}: {pq} — {pullback_result.get('pullback_reason', '')}")
 
+        # ORB/pullback mandatory gate — risky setups require ORB or pullback confirmation
+        if not avoid_override_pending:
+            orb_pb_confirmed  = orb_breakout or pullback_result.get("pullback_detected", False)
+            needs_confirmation = score_below_min or is_experimental or regime == CHOPPY or low_vol_mode
+            if needs_confirmation and not orb_pb_confirmed:
+                print(f"   [SKIP] {symbol}: risky setup requires ORB/pullback confirmation "
+                      f"(score={score}, regime={regime}, experimental={is_experimental})")
+                _reject(symbol, score, setup_type, "orb_pullback_gate", "orb_pullback_required",
+                        observed=f"orb={orb_breakout},pb={pullback_result.get('pullback_detected',False)}",
+                        is_experimental=is_experimental)
+                continue
+
         # ATR-aware stop (spec point 7)
         atr_stop = atr_aware_stop_pct(bars_1min, price)
         stop_pct = atr_stop if bars_1min else suggested_stop_pct(mom["strength"], regime)
         # Take profit = max(TAKE_PROFIT_PCT, 2x stop) to maintain R/R >= 1
         tp_pct   = max(TAKE_PROFIT_PCT, 2.0 * stop_pct)
+
+        # HIGH_VOL severity — moderate if stock ATR >= HIGH_VOL_MODERATE_ATR_PCT
+        high_vol_moderate = high_vol_mode and (atr_stop * 100 >= HIGH_VOL_MODERATE_ATR_PCT)
+        if high_vol_moderate:
+            hv_mod_required = effective_min + HIGH_VOL_MIN_SCORE_EXTRA + HIGH_VOL_MODERATE_EXTRA_PTS
+            if score < hv_mod_required:
+                print(f"   [SKIP] {symbol}: HIGH_VOL MODERATE requires score>={hv_mod_required} "
+                      f"(ATR={atr_stop*100:.2f}%, got {score})")
+                _reject(symbol, score, setup_type, "high_vol_gate", "high_vol_moderate_score",
+                        observed=score, threshold=hv_mod_required, is_experimental=is_experimental)
+                continue
 
         shares, size_pct, size_note = dynamic_position_size(
             portfolio, price, score, vol_pct, spread_pct, regime, recent_wr
@@ -778,12 +832,13 @@ def _scan_and_trade(paper_mode: bool = False):
                 size_pct  = banded_pct
                 size_note += f" | {band_label}"
 
-        # HIGH_VOL: reduce size by HIGH_VOL_SIZE_CUT (applied after PAPER bands)
+        # HIGH_VOL: reduce size (moderate = deeper cut)
         if high_vol_mode:
-            hv_pct   = max(MIN_POSITION_SIZE_PCT, size_pct * (1 - HIGH_VOL_SIZE_CUT))
-            shares   = max(1, int(portfolio * hv_pct / price))
-            size_pct = hv_pct
-            size_note += f" | HV-{HIGH_VOL_SIZE_CUT:.0%}"
+            actual_cut = HIGH_VOL_MODERATE_SIZE_CUT if high_vol_moderate else HIGH_VOL_SIZE_CUT
+            hv_pct    = max(MIN_POSITION_SIZE_PCT, size_pct * (1 - actual_cut))
+            shares    = max(1, int(portfolio * hv_pct / price))
+            size_pct  = hv_pct
+            size_note += f" | HV-{actual_cut:.0%}"
 
         # ELITE size boost (spec point 5) — only if spread tight and market aligned
         if tier == "ELITE" and not high_vol_mode and spread_pct < 0.15 and alignment in ("BULLISH", "STRONG_BULLISH", "ALIGNED"):
@@ -792,6 +847,13 @@ def _scan_and_trade(paper_mode: bool = False):
                 shares   = max(1, int(portfolio * boosted_pct / price))
                 size_pct = boosted_pct
                 size_note += f" | ELITE+{ELITE_SIZE_BOOST:.0%}"
+
+        # Preferred spread penalty — reduce size when spread is wide
+        if spread_pct > SPREAD_PENALTY_ABOVE:
+            penalty_pct = max(MIN_POSITION_SIZE_PCT, size_pct * (1 - SPREAD_SIZE_PENALTY_PCT))
+            shares    = max(1, int(portfolio * penalty_pct / price))
+            size_note += f" | SPREAD-{SPREAD_SIZE_PENALTY_PCT:.0%}"
+            size_pct   = penalty_pct
 
         cost = shares * price
 
@@ -936,6 +998,7 @@ def _scan_and_trade(paper_mode: bool = False):
             "decay_points":           pick.get("_decay_points", 0),
             "age_mins":               round(age_mins, 1),
             "stale":                  is_stale,
+            "high_vol_severity":      "moderate" if high_vol_moderate else ("mild" if high_vol_mode else "none"),
         }
 
         # Log all feed inputs used for this decision
@@ -969,16 +1032,25 @@ def _scan_and_trade(paper_mode: bool = False):
 
         submit_ts = datetime.now(ET).isoformat()
 
-        # Pre-submit sanity check — re-verify 9 conditions immediately before order
-        if not paper_mode:
-            ps_ok, ps_reason = _pre_submit_check(symbol, price, spread_pct, portfolio)
-            if not ps_ok:
-                print(f"   [PRE_SUBMIT_REJECT] {symbol}: {ps_reason}")
-                log_audit("PRE_SUBMIT_REJECT", symbol, {
-                    "reason": ps_reason, "score": score, "setup_type": setup_type,
-                    "trading_mode": TRADING_MODE, "is_experimental": is_experimental,
-                })
-                continue
+        # Pre-submit — live: block on failure; paper: tag would_reject_live
+        ps_ok, ps_reason = _pre_submit_check(symbol, price, spread_pct, portfolio)
+        would_reject_live        = not ps_ok
+        would_reject_live_reason = ps_reason if not ps_ok else ""
+        audit_details["would_reject_live"]        = would_reject_live
+        audit_details["would_reject_live_reason"] = would_reject_live_reason
+        if not paper_mode and not ps_ok:
+            print(f"   [PRE_SUBMIT_REJECT] {symbol}: {ps_reason}")
+            log_audit("PRE_SUBMIT_REJECT", symbol, {
+                "reason": ps_reason, "score": score, "setup_type": setup_type,
+                "trading_mode": TRADING_MODE, "is_experimental": is_experimental,
+            })
+            continue
+
+        # LIVE promoted-setup logging (informational, LIVE_REQUIRE_PROMOTED_SETUPS gates this)
+        if LIVE_REQUIRE_PROMOTED_SETUPS and setup_type not in LIVE_PROMOTED_SETUPS:
+            log_audit("LIVE_UNPROMOTED_SETUP", symbol, {
+                "setup_type": setup_type, "score": score, "regime": regime,
+            })
 
         if paper_mode:
             exp_tag = " [EXPERIMENTAL]" if is_experimental else ""
@@ -1011,6 +1083,10 @@ def _scan_and_trade(paper_mode: bool = False):
                 "age_mins":                round(age_mins, 1),
                 "stale":                   is_stale,
                 "trading_mode":            TRADING_MODE,
+                "claude_involved":         not pick.get("_local_only", False),
+                "would_reject_live":       would_reject_live,
+                "would_reject_live_reason": would_reject_live_reason,
+                "high_vol_moderate":       high_vol_moderate,
             })
         else:
             print(f"   BUY {symbol}  score={score}/100  tier={tier}  {size_note}  "
@@ -1042,7 +1118,7 @@ def _scan_and_trade(paper_mode: bool = False):
                 "submit_ts":             submit_ts,
                 "signal_price":          prescan_price,
                 "decision_price":        price,
-                "submitted_limit_price": round(price * 1.001, 4),
+                "submitted_limit_price": round(price * (1 + min(_limit_offset(spread_pct), MAX_LIMIT_SLIPPAGE_PCT)), 4),
                 "fill_price":            fill_price,
                 "slippage_pct":          slippage_pct,
                 "spread_at_decision":    spread_pct,
