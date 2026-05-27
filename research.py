@@ -19,6 +19,7 @@ from config import (
     ANTHROPIC_API_KEY, FINNHUB_API_KEY, WATCHLIST,
     RESEARCH_CACHE_FILE, RESEARCH_CACHE_HOURS, CLAUDE_RESEARCH_TOP_N,
 )
+from gapper import run_gapper_scan
 
 _claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -283,6 +284,9 @@ def run_premarket_research() -> dict:
         "symbols":      symbols_out,
     }
     _save_cache(result)
+
+    # Run gapper scan alongside research so gappers are ready for prescan
+    run_gapper_scan()
 
     bullish = sum(1 for s in symbols_out.values() if s.get("pre_market_bias") == "BULLISH")
     avoid   = sum(1 for s in symbols_out.values() if s.get("pre_market_bias") in ("BEARISH", "AVOID"))

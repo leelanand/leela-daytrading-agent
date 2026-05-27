@@ -14,6 +14,7 @@ from config import (
     MIN_GAP_PCT, MIN_REL_VOLUME, MIN_VOLUME_DAILY, MAX_SPREAD_PCT,
     MAX_MOVE_BEFORE_ENTRY_PCT, MIN_VOLUME_TREND_RATIO, VWAP_PREFERENCE,
 )
+from gapper import get_daily_gappers
 
 ET = ZoneInfo("America/New_York")
 
@@ -83,11 +84,15 @@ def scan_for_candidates() -> list[dict]:
     Each dict: symbol, price, prev_close, gap_pct, rel_volume, today_volume,
                bid, ask, spread_pct, volatility_pct, sector, news, has_news.
     """
-    print(f"   Scanning {len(WATCHLIST)} symbols...")
-    snaps      = _snapshots(WATCHLIST)
+    gappers  = get_daily_gappers()
+    universe = list(dict.fromkeys(WATCHLIST + gappers))  # deduplicated
+    extra    = [s for s in gappers if s not in WATCHLIST]
+    print(f"   Scanning {len(universe)} symbols ({len(WATCHLIST)} watchlist"
+          + (f" + {len(extra)} gappers: {', '.join(extra)}" if extra else "") + ")...")
+    snaps      = _snapshots(universe)
     candidates = []
 
-    for symbol in WATCHLIST:
+    for symbol in universe:
         snap = snaps.get(symbol)
         if not snap:
             continue

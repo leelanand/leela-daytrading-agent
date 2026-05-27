@@ -25,7 +25,7 @@ if hasattr(sys.stdout, "reconfigure"):
 from alpaca.trading.client import TradingClient
 from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, PAPER_TRADING,
-    MIN_SCORE_TO_TRADE, WATCHLIST_SCORE, KILL_SWITCH,
+    MIN_SCORE_TO_TRADE, CHOPPY_MIN_SCORE, WATCHLIST_SCORE, KILL_SWITCH,
     BLOCK_MIDDAY, BLOCK_MIDDAY_START, BLOCK_MIDDAY_END,
     MIN_MOMENTUM_TO_TRADE,
     LOW_VOLUME_MIN_SCORE, LOW_VOLUME_MAX_TRADES,
@@ -44,7 +44,7 @@ from risk import (
 )
 from logger import init_db, log_audit, log_paper_trade, today_summary, all_time_summary, log_telemetry
 from candidates import save_candidates, load_valid_candidates
-from regime import detect_regime, is_tradeable, get_regime_context, LOW_VOLUME
+from regime import detect_regime, is_tradeable, get_regime_context, LOW_VOLUME, CHOPPY
 from sizing import dynamic_position_size
 from exits import record_entry, monitor_positions
 from momentum import analyse_momentum, STRENGTHENING, STABLE
@@ -207,7 +207,15 @@ def _prescan():
         log_audit("PRESCAN_DONE", details={"candidates": 0})
         return
 
-    scored    = analyse_candidates(candidates)
+    scored = analyse_candidates(candidates)
+
+    # In CHOPPY regime lower the bar slightly — flat markets produce fewer high-scorers
+    if regime == CHOPPY:
+        for p in scored:
+            if CHOPPY_MIN_SCORE <= p.get("score", 0) < MIN_SCORE_TO_TRADE:
+                p["tradeable"] = True
+                p["watchlist"] = False
+
     tradeable = [p for p in scored if p.get("tradeable")]
     watchlist = [p for p in scored if p.get("watchlist")]
 

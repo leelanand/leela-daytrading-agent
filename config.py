@@ -30,8 +30,9 @@ LIMIT_OFFSET_PCT  = 0.001      # buy limit = price * (1 + LIMIT_OFFSET_PCT)
 STAGED_ENTRY      = False      # True = 50% initial, 50% on confirmation
 
 # ── Scoring thresholds ─────────────────────────────────────────────────────────
-MIN_SCORE_TO_TRADE = 78        # 0-100: minimum score to place a real order
-WATCHLIST_SCORE    = 60        # 0-100: monitor but don't trade yet
+MIN_SCORE_TO_TRADE  = 78       # 0-100: minimum score to place a real order
+CHOPPY_MIN_SCORE    = 73       # lower bar in CHOPPY regime — flat market, fewer high-scorers
+WATCHLIST_SCORE     = 60       # 0-100: monitor but don't trade yet
 
 # ── Risk controls ──────────────────────────────────────────────────────────────
 DAILY_LOSS_LIMIT    = 0.03     # stop trading if down 3% on the day
@@ -103,6 +104,33 @@ PERFORMANCE_FILE      = Path(__file__).parent / "performance.json"
 PERF_HISTORY_FILE     = Path(__file__).parent / "performance_history.jsonl"
 EXIT_STATE_FILE       = Path(__file__).parent / "exit_state.json"
 REGIME_CACHE_FILE     = Path(__file__).parent / "regime_cache.json"
+
+# ── Gapper Discovery ───────────────────────────────────────────────────────────
+GAPPER_MIN_GAP_PCT  = 3.0    # minimum % gap to qualify
+GAPPER_TOP_N        = 8      # max dynamic gappers added to daily scan
+GAPPER_CACHE_FILE   = Path(__file__).parent / "gappers_today.json"
+GAPPER_UNIVERSE = [
+    # AI / next-gen tech
+    "APP", "IONQ", "SOUN", "NBIS", "OKLO", "RKLB", "ASTS", "ACHR", "JOBY", "LUNR",
+    # Chinese ADRs
+    "BIDU", "BILI", "JD", "NIO", "XPEV", "LI",
+    # Fintech
+    "AFRM", "UPST", "LC", "OPEN", "OPFI",
+    # Health / biotech
+    "HIMS", "CELH", "RXRX", "ARWR", "CRSP", "NVAX", "MRNA",
+    # Clean energy
+    "FSLR", "ENPH", "RUN", "PLUG", "BE", "BLNK", "CHPT",
+    # Crypto miners (beyond MARA/COIN)
+    "RIOT", "CLSK", "HUT", "BTBT", "CORZ", "WULF",
+    # Consumer / e-commerce
+    "CHWY", "W", "ETSY", "SNAP", "PINS",
+    # Semis adjacent
+    "AMBA", "AEHR", "FORM", "ONTO",
+    # Gene editing / biotech
+    "FATE", "BEAM", "EDIT", "NTLA",
+    # High-vol ETFs
+    "ARKK", "ARKG", "LABU", "LABD", "TNA", "SPXL", "SPXS",
+]
 
 # ── Intraday Momentum (1-min bars) ────────────────────────────────────────────
 INTRADAY_BARS             = 15     # 1-min bars per symbol for momentum classification
@@ -269,9 +297,9 @@ CLAUDE_EFFECTIVENESS_LOG_FILE = Path(__file__).parent / "claude_effectiveness.js
 # ── Watchlist ──────────────────────────────────────────────────────────────────
 WATCHLIST = [
     "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "META", "GOOGL", "AMZN", "NFLX", "AVGO",
-    "COIN", "MARA", "PLTR", "SOFI", "HOOD", "RIVN", "LCID",
+    "COIN", "MARA", "PLTR", "SOFI", "HOOD", "RIVN",
     "SMCI", "MU", "QCOM", "INTC", "ARM", "MRVL",
     "DDOG", "ZS", "CRWD", "SNOW", "ROKU", "TTD", "UBER", "LYFT",
     "SPY", "QQQ", "SOXL", "TQQQ",
-    "GNRC",
+    "APP", "HIMS",
 ]

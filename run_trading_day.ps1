@@ -78,11 +78,12 @@ Run-Agent @("--prescan")
 $prescanDone = Test-PrescanDone
 
 # ── Main trading loop ─────────────────────────────────────────────────────────
-$lastScan         = [DateTime]::MinValue
-$lastMonitor      = [DateTime]::MinValue
-$ScanIntervalM    = 5
-$MonitorIntervalM = 2
-$forceClosed      = $false
+$lastScan               = [DateTime]::MinValue
+$lastMonitor            = [DateTime]::MinValue
+$ScanIntervalM          = 5
+$MonitorIntervalM       = 2
+$forceClosed            = $false
+$afternoonPrescanDone   = $false
 
 Write-Log "Entering main loop (scan every ${ScanIntervalM}min, monitor every ${MonitorIntervalM}min)..."
 
@@ -99,6 +100,14 @@ while ($true) {
 
     # Stop entering new scans after 20:30 BST (15:30 ET) — let monitor handle final mins
     $scanAllowed = ($hhmm -lt 2030)
+
+    # Afternoon prescan refresh at 18:05 BST (13:05 ET) — fresh RVOL after midday block
+    if (-not $afternoonPrescanDone -and $hhmm -ge 1805 -and $hhmm -lt 1815) {
+        Write-Log "Afternoon session refresh — running prescan with fresh data (18:05 BST / 13:05 ET)..."
+        Run-Agent @("--prescan")
+        $afternoonPrescanDone = $true
+        $lastScan = [DateTime]::MinValue  # trigger immediate scan after refresh
+    }
 
     if ($scanAllowed -and (($now - $lastScan).TotalMinutes -ge $ScanIntervalM)) {
         # Fix 3: auto-prescan if prescan was previously skipped (regime was NO_TRADE)
