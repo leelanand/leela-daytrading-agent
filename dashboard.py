@@ -241,15 +241,27 @@ def _agent_status() -> dict:
 
 
 def _gappers_today() -> list[dict]:
-    try:
-        f = ALPACA_DIR / "gappers_today.json"
-        if f.exists():
+    today = date.today().isoformat()
+    seen: set[str] = set()
+    merged: list[dict] = []
+    # Both agents share the same cache file (IBKR points to Alpaca's), but try both paths
+    for d in (ALPACA_DIR, IBKR_DIR):
+        try:
+            f = d / "gappers_today.json"
+            if not f.exists():
+                continue
             data = json.loads(f.read_text())
-            if data.get("date") == date.today().isoformat():
-                return data.get("details", [])
-    except Exception:
-        pass
-    return []
+            if data.get("date") != today:
+                continue
+            for g in data.get("details", []):
+                sym = g.get("symbol", "")
+                if sym and sym not in seen:
+                    seen.add(sym)
+                    merged.append(g)
+        except Exception:
+            pass
+    merged.sort(key=lambda x: -x.get("score", 0))
+    return merged
 
 
 # ── Schedule status ───────────────────────────────────────────────────────────

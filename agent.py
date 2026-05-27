@@ -349,6 +349,13 @@ def _scan_and_trade(paper_mode: bool = False):
         log_audit("SCAN_SKIPPED", details={"reason": f"weak_window:{current_win}"})
         return
 
+    # Intraday gapper refresh — runs unconditionally so gappers are current even on NO_TRADE days
+    try:
+        from gapper import refresh_gappers_intraday
+        refresh_gappers_intraday()
+    except Exception:
+        pass
+
     # Regime check
     regime, regime_reason = detect_regime()
     print(f"   Regime  : {regime} — {regime_reason}")
@@ -393,13 +400,6 @@ def _scan_and_trade(paper_mode: bool = False):
     rolling   = get_recent_performance()
     recent_wr = rolling.get("win_rate", 0.50)
     held      = open_symbols()
-
-    # Intraday gapper refresh — keeps dynamic movers current (every 15 min)
-    try:
-        from gapper import refresh_gappers_intraday
-        refresh_gappers_intraday()
-    except Exception:
-        pass
 
     prescan = load_valid_candidates()
 
@@ -539,15 +539,20 @@ def _scan_and_trade(paper_mode: bool = False):
             })
             continue
 
-        # Score gate — check effective minimum for this regime + setup combination
-        if score < effective_min:
-            log_audit("TRADE_REJECTED", symbol, {
-                "score": score, "effective_min": effective_min,
-                "regime": regime, "setup_type": setup_type,
-                "reason": f"score {score} < effective_min {effective_min} ({regime}/{setup_type})",
-            })
-            print(f"   [SKIP] {symbol}: score {score} < {effective_min} ({regime}/{setup_type})")
-            continue
+        # Score gate — hard reject if gap exceeds quality-override ceiling; otherwise fall
+        # through to the quality override check below (which needs ORB/pullback results)
+        score_below_min = score < effective_min
+        if score_below_min:
+            gap = effective_min - score
+            if gap > QUALITY_OVERRIDE_MAX_GAP_PTS:
+                log_audit("TRADE_REJECTED", symbol, {
+                    "score": score, "effective_min": effective_min,
+                    "regime": regime, "setup_type": setup_type,
+                    "reason": f"score {score} < {effective_min}, gap {gap}pts > QO ceiling {QUALITY_OVERRIDE_MAX_GAP_PTS}",
+                })
+                print(f"   [SKIP] {symbol}: score {score} < {effective_min}, gap {gap}pts exceeds QO ceiling")
+                continue
+            print(f"   [BELOW-MIN] {symbol}: score {score} < {effective_min} (gap {gap}pts ≤ QO ceiling) — quality override pending")
 
         # LOW_VOLUME confidence gate — require higher score than normal
         if low_vol_mode and score < LOW_VOLUME_MIN_SCORE:
@@ -588,9 +593,6 @@ def _scan_and_trade(paper_mode: bool = False):
         except Exception:
             pass
 
-        # Quality override pre-check — evaluated before ORB/pullback so we have early info
-        # (full check happens after ORB/pullback results are known, below)
-        _quality_override_pending = score < effective_min  # already gated above, but for late decay
 
         # ORB check (spec point 3) — informational quality signal, not a blocker
         orb_status: dict = {}
@@ -750,7 +752,7 @@ def _scan_and_trade(paper_mode: bool = False):
             no_failed_bo=not fb_failed,
         )
         quality_override_applied = False
-        if score < effective_min:
+        if score_below_min:
             if qo_allowed:
                 quality_override_applied = True
                 print(f"   [QUALITY OVERRIDE] {symbol}: {qo_reason}")
