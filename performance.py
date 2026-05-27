@@ -14,6 +14,7 @@ from config import (
     DB_PATH, PERFORMANCE_FILE, PERF_HISTORY_FILE,
     PERF_LOOKBACK_DAYS, MIN_WIN_RATE_TO_TRADE,
     WINDOW_BLOCK_MIN_TRADES, WINDOW_BLOCK_AVG_PNL,
+    CLAUDE_EFFECTIVENESS_LOG_FILE,
 )
 
 ET = ZoneInfo("America/New_York")
@@ -201,6 +202,9 @@ def generate_daily_performance() -> dict:
         pass
     perf["high_score_losers"] = losers
 
+    # Claude effectiveness
+    perf["claude_effectiveness"] = get_claude_effectiveness(today)
+
     PERFORMANCE_FILE.write_text(json.dumps(perf, indent=2))
     with open(PERF_HISTORY_FILE, "a") as f:
         f.write(json.dumps({k: v for k, v in perf.items() if k != "rejections"}) + "\n")
@@ -294,6 +298,13 @@ def print_performance_report(perf: dict):
     try:
         losers = perf.get("high_score_losers") or high_score_loser_review()
         print_high_score_loser_review(losers)
+    except Exception:
+        pass
+
+    # Claude effectiveness
+    try:
+        eff = perf.get("claude_effectiveness") or get_claude_effectiveness()
+        print_claude_effectiveness(eff)
     except Exception:
         pass
 
@@ -393,6 +404,103 @@ def get_expectancy_by_dimension() -> dict:
         "by_regime": {k: _stats(v) for k, v in by_regime.items()},
         "by_setup":  {k: _stats(v) for k, v in by_setup.items()},
     }
+
+
+# ── Claude Effectiveness ──────────────────────────────────────────────────────
+
+def get_claude_effectiveness(target_date: str | None = None) -> dict:
+    """
+    Summarise Claude decision-impact for a given date (default: today).
+    Reads from claude_effectiveness.jsonl written by analyst.py.
+    """
+    td = target_date or date.today().isoformat()
+    try:
+        if not CLAUDE_EFFECTIVENESS_LOG_FILE.exists():
+            return {}
+        lines = [
+            json.loads(ln)
+            for ln in CLAUDE_EFFECTIVENESS_LOG_FILE.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        records = [r for r in lines if r.get("date") == td]
+        if not records:
+            return {}
+
+        total         = len(records)
+        local_rejects = sum(1 for r in records if r.get("local_only"))
+        cache_hits    = sum(1 for r in records if r.get("cache_hit"))
+        claude_scored = sum(1 for r in records if not r.get("local_only") and not r.get("cache_hit"))
+        changed       = sum(1 for r in records if r.get("claude_changed_decision"))
+
+        eligible      = total - local_rejects  # candidates that reached Claude or cache
+        cache_rate    = round(cache_hits / eligible, 2) if eligible else 0.0
+        change_rate   = round(changed / claude_scored, 2) if claude_scored else 0.0
+
+        # Examples of decision changes
+        changes = [
+            {
+                "symbol":       r["symbol"],
+                "time":         r.get("time", ""),
+                "local_score":  r["local_score"],
+                "claude_score": r["claude_score"],
+                "local_tradeable":  r.get("local_tradeable"),
+                "claude_tradeable": r.get("claude_tradeable"),
+            }
+            for r in records
+            if r.get("claude_changed_decision")
+        ]
+
+        return {
+            "date":               td,
+            "total_candidates":   total,
+            "local_rejects":      local_rejects,
+            "cache_hits":         cache_hits,
+            "claude_scored":      claude_scored,
+            "cache_hit_rate":     cache_rate,
+            "decisions_changed":  changed,
+            "decision_change_rate": change_rate,
+            "decision_changes":   changes,
+        }
+    except Exception:
+        return {}
+
+
+def print_claude_effectiveness(eff: dict):
+    if not eff:
+        print("\n  Claude Effectiveness: no data for today")
+        return
+    print(f"\n  Claude Effectiveness — {eff['date']}")
+    print(f"  {'─'*50}")
+    print(f"  Candidates seen  : {eff['total_candidates']}")
+    print(f"  Local rejects    : {eff['local_rejects']}  "
+          f"(skipped Claude — below gate threshold)")
+    print(f"  Cache hits       : {eff['cache_hits']}  "
+          f"(reused score — inputs unchanged)")
+    print(f"  Claude scored    : {eff['claude_scored']}  "
+          f"(new API calls made)")
+    print(f"  Cache hit rate   : {eff['cache_hit_rate']:.0%}  "
+          f"(of eligible candidates)")
+    print(f"  Decision changes : {eff['decisions_changed']}  "
+          f"({eff['decision_change_rate']:.0%} of Claude-scored)")
+
+    changes = eff.get("decision_changes", [])
+    if changes:
+        print(f"\n  Symbols where Claude changed tradeable decision:")
+        for ch in changes:
+            direction = ("↑ TRADEABLE" if ch.get("claude_tradeable")
+                         else "↓ REJECTED")
+            print(f"    {ch['symbol']:6s} {ch['time']:5s}  "
+                  f"local={ch['local_score']:3d} → claude={ch['claude_score']:3d}  "
+                  f"{direction}")
+    else:
+        print(f"  No tradeable decisions changed by Claude today.")
+
+    if eff["claude_scored"] > 0 and eff["decision_change_rate"] < 0.10:
+        print(f"\n  ⓘ  Claude changed <10% of its decisions — consider raising "
+              f"CLAUDE_MIN_LOCAL_SCORE to reduce calls further.")
+    elif eff["decision_change_rate"] > 0.40:
+        print(f"\n  ⓘ  Claude changed >40% of decisions — it is adding material value; "
+              f"keep current threshold.")
 
 
 def should_pause_trading() -> tuple[bool, str]:

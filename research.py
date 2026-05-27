@@ -17,7 +17,7 @@ import anthropic
 from datetime import datetime, timezone, date
 from config import (
     ANTHROPIC_API_KEY, FINNHUB_API_KEY, WATCHLIST,
-    RESEARCH_CACHE_FILE, RESEARCH_CACHE_HOURS,
+    RESEARCH_CACHE_FILE, RESEARCH_CACHE_HOURS, CLAUDE_RESEARCH_TOP_N,
 )
 
 _claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -65,6 +65,44 @@ def _load_cache() -> dict | None:
 
 def _save_cache(data: dict):
     RESEARCH_CACHE_FILE.write_text(json.dumps(data, indent=2))
+
+
+# ── Local research ranking ────────────────────────────────────────────────────
+
+def _local_research_rank(d: dict) -> float:
+    """Score 0-100 ranking research interest. Used to select top-N for Claude.
+    Higher = more likely to have interesting intraday characteristics today."""
+    score = 50.0
+
+    short_ratio = d.get("short_ratio", 0)
+    if short_ratio > 10:   score += 20
+    elif short_ratio > 5:  score += 12
+    elif short_ratio > 3:  score += 5
+
+    float_m = d.get("float_shares_m", 0)
+    if 0 < float_m < 20:    score += 15
+    elif 0 < float_m < 50:  score += 8
+    elif float_m > 500:     score -= 10
+
+    if d.get("near_52w_high", False):  score += 10
+    if d.get("near_52w_low", False):   score -= 15
+
+    rating = d.get("analyst_rating", "none") or "none"
+    if rating in ("strong_buy", "buy"):      score += 10
+    elif rating in ("sell", "strong_sell"):  score -= 10
+
+    price  = d.get("price", 0)
+    target = d.get("target_price", 0)
+    if price > 0 and target > price:
+        upside = (target - price) / price * 100
+        if upside > 20:    score += 10
+        elif upside > 15:  score += 6
+
+    # Prefer mid-range 52w position (active trading zone, not extreme)
+    pct = d.get("pct_of_52w_range", 50)
+    if 30 <= pct <= 80:  score += 3
+
+    return max(0.0, min(100.0, score))
 
 
 # ── Data fetchers ─────────────────────────────────────────────────────────────
@@ -160,7 +198,7 @@ def _synthesise(symbol_data: list[dict], macro: dict) -> list[dict]:
 
     resp = _claude.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=16000,
+        max_tokens=5000,
         system=[{"type": "text", "text": RESEARCH_SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": prompt}],
     )
@@ -205,9 +243,27 @@ def run_premarket_research() -> dict:
               f"short_ratio={d.get('short_ratio', '?')}  "
               f"rating={d.get('analyst_rating', '?')}")
 
-    print(f"   [RESEARCH] Synthesising {len(symbol_data)} symbols with Claude...")
-    briefs    = _synthesise(symbol_data, macro)
+    # Rank symbols by research interest; send only top-N to Claude
+    symbol_data.sort(key=_local_research_rank, reverse=True)
+    top_n      = symbol_data[:CLAUDE_RESEARCH_TOP_N]
+    stub_syms  = symbol_data[CLAUDE_RESEARCH_TOP_N:]
+
+    print(f"   [RESEARCH] Synthesising top {len(top_n)} of {len(symbol_data)} with Claude "
+          f"(skipping {len(stub_syms)} low-interest symbols)")
+    if top_n:
+        print(f"   [RESEARCH] Claude batch: {', '.join(d['symbol'] for d in top_n)}")
+
+    briefs    = _synthesise(top_n, macro)
     brief_map = {b["symbol"]: b for b in briefs}
+
+    # Stubs for symbols not sent to Claude
+    for d in stub_syms:
+        brief_map[d["symbol"]] = {
+            "research_brief":  "Not analysed — below research interest threshold.",
+            "pre_market_bias": "NEUTRAL",
+            "research_score":  50,
+            "red_flags":       [],
+        }
 
     symbols_out = {}
     for d in symbol_data:

@@ -252,6 +252,19 @@ ENABLE_CLAUDE_RESCORING       = True  # set False to run on local scores only (z
 MAX_SYMBOLS_PER_CLAUDE_BATCH  = 12    # max candidates per Claude API call
 ANALYST_SCORE_CACHE_FILE      = Path(__file__).parent / "analyst_score_cache.json"
 
+# ── Claude Cache Invalidation Thresholds ──────────────────────────────────────
+CLAUDE_CACHE_PRICE_MOVE_INVALIDATE_PCT  = 1.25   # re-score if move_from_open shifts > this %
+CLAUDE_CACHE_RVOL_CHANGE_INVALIDATE_PCT = 25     # re-score if RVOL changes > this % (relative)
+CLAUDE_CACHE_REGIME_CHANGE_INVALIDATE   = True   # re-score all if market regime changes
+CLAUDE_CACHE_NEW_CATALYST_INVALIDATE    = True   # re-score if a new top headline appears
+
+# ── Research Mode ──────────────────────────────────────────────────────────────
+CLAUDE_RESEARCH_TOP_N = 10   # send only top N symbols by research interest to Claude
+
+# ── Claude Effectiveness Tracking ─────────────────────────────────────────────
+TRACK_CLAUDE_DECISION_DELTA   = True
+CLAUDE_EFFECTIVENESS_LOG_FILE = Path(__file__).parent / "claude_effectiveness.jsonl"
+
 # ── Watchlist ──────────────────────────────────────────────────────────────────
 WATCHLIST = [
     "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "META", "GOOGL", "AMZN", "NFLX", "AVGO",

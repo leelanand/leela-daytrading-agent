@@ -4,22 +4,27 @@ Claude scores intraday momentum candidates 0-100 with component breakdown.
 Token-optimised flow:
   - Local pre-scoring gates Claude calls: candidates below CLAUDE_MIN_LOCAL_SCORE
     are rejected deterministically without any API call
-  - File-based score cache (keyed by symbol + date + input hash) avoids re-scoring
-    candidates whose inputs have not materially changed since the last scan
-  - Compact prompt: only the fields Claude actually needs, short field names
-  - Compact output: top_reasons + red_flags arrays (max 2 each) instead of
-    free-text reasoning — reasoning string is derived locally for downstream use
+  - File-based score cache with material-change invalidation: only invalidates when
+    move_from_open, RVOL, headline, or regime shift beyond configured thresholds
+  - Compact prompt (short field names, only needed fields) + compact output schema
+  - Effectiveness tracking: logs local vs Claude decision per candidate per scan
 """
 import anthropic
 import json
 import hashlib
 import yfinance as yf
-from datetime import date
+from datetime import date, datetime
 from config import (
     ANTHROPIC_API_KEY, MIN_SCORE_TO_TRADE, WATCHLIST_SCORE,
     SECTOR_ETFS, NEWS_MIN_IMPACT_SCORE,
     CLAUDE_MIN_LOCAL_SCORE, ENABLE_CLAUDE_RESCORING,
     MAX_SYMBOLS_PER_CLAUDE_BATCH, ANALYST_SCORE_CACHE_FILE,
+    CLAUDE_CACHE_PRICE_MOVE_INVALIDATE_PCT,
+    CLAUDE_CACHE_RVOL_CHANGE_INVALIDATE_PCT,
+    CLAUDE_CACHE_REGIME_CHANGE_INVALIDATE,
+    CLAUDE_CACHE_NEW_CATALYST_INVALIDATE,
+    TRACK_CLAUDE_DECISION_DELTA, CLAUDE_EFFECTIVENESS_LOG_FILE,
+    REGIME_CACHE_FILE,
 )
 from news_feed import get_all_news, news_for_symbol
 from event_risk import get_risk_summary
@@ -93,6 +98,14 @@ def _broad_market_context() -> dict:
         return {}
 
 
+def _get_current_regime() -> str:
+    try:
+        data = json.loads(REGIME_CACHE_FILE.read_text())
+        return data.get("regime", "UNKNOWN")
+    except Exception:
+        return "UNKNOWN"
+
+
 # ── Local pre-scoring (gate only — not used for trading decisions) ─────────────
 
 def _local_score(c: dict, research: dict) -> int:
@@ -126,21 +139,74 @@ def _local_score(c: dict, research: dict) -> int:
     return max(0, min(100, score))
 
 
-def _candidate_hash(c: dict, top_news: list, research: dict) -> str:
-    """Short hash of the fields that materially affect Claude's score.
-    Rounded to coarse buckets so minor price drift doesn't bust the cache."""
+# ── Cache key + invalidation ──────────────────────────────────────────────────
+
+def _candidate_hash(c: dict, top_news: list, research: dict, regime: str) -> str:
+    """Cache key using config-driven buckets.
+
+    Bucket sizes are chosen so that changes beyond the configured invalidation
+    thresholds land in a different bucket (= different hash = automatic cache miss).
+    The snapshot check in _should_invalidate() catches edge cases within a bucket.
+    """
+    rvol = c.get("rel_volume", 0)
+    # RVOL bucket: ~25% relative change → 0.5 absolute bucket at RVOL 2.0
+    rvol_bucket = max(round(rvol * CLAUDE_CACHE_RVOL_CHANGE_INVALIDATE_PCT / 100 * 2) / 2, 0.25)
+
     key = {
-        "gap":      round(c.get("gap_pct", 0) * 2) / 2,       # 0.5% buckets
-        "rvol":     round(c.get("rel_volume", 0) * 4) / 4,    # 0.25 buckets
+        "gap":      round(c.get("gap_pct", 0) / 0.5) * 0.5,
+        "move":     round(c.get("move_from_open", 0) / CLAUDE_CACHE_PRICE_MOVE_INVALIDATE_PCT)
+                    * CLAUDE_CACHE_PRICE_MOVE_INVALIDATE_PCT,
+        "rvol":     round(rvol / rvol_bucket) * rvol_bucket,
         "spread":   round(c.get("spread_pct", 0), 2),
         "bvwap":    c.get("below_vwap", False),
         "vtrend":   round(c.get("vol_trend_ratio", 1.0), 1),
         "impact":   top_news[0]["impact"] if top_news else 0,
-        "headline": top_news[0]["headline"][:60] if top_news else "",
+        "headline": (top_news[0]["headline"][:60] if top_news else "")
+                    if CLAUDE_CACHE_NEW_CATALYST_INVALIDATE else "",
         "bias":     research.get("pre_market_bias", "NEUTRAL"),
         "rscore":   research.get("research_score", 50),
+        "regime":   regime if CLAUDE_CACHE_REGIME_CHANGE_INVALIDATE else "",
     }
     return hashlib.md5(json.dumps(key, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def _build_snap(c: dict, top_news: list, regime: str) -> dict:
+    """Snapshot of values stored in cache entry for secondary invalidation check."""
+    return {
+        "move":     c.get("move_from_open", 0),
+        "rvol":     c.get("rel_volume", 0),
+        "spread":   c.get("spread_pct", 0),
+        "headline": top_news[0]["headline"][:60] if top_news else "",
+        "regime":   regime,
+    }
+
+
+def _should_invalidate(snap: dict, c: dict, top_news: list, regime: str) -> bool:
+    """Secondary check: bust cache if values shifted materially within a hash bucket."""
+    cur_move   = c.get("move_from_open", 0)
+    cur_rvol   = c.get("rel_volume", 0)
+    cur_spread = c.get("spread_pct", 0)
+    cur_head   = top_news[0]["headline"][:60] if top_news else ""
+
+    if abs(cur_move - snap.get("move", cur_move)) > CLAUDE_CACHE_PRICE_MOVE_INVALIDATE_PCT:
+        return True
+
+    old_rvol = snap.get("rvol", cur_rvol)
+    if old_rvol > 0:
+        if abs(cur_rvol - old_rvol) / old_rvol * 100 > CLAUDE_CACHE_RVOL_CHANGE_INVALIDATE_PCT:
+            return True
+
+    if CLAUDE_CACHE_NEW_CATALYST_INVALIDATE and cur_head != snap.get("headline", cur_head):
+        return True
+
+    if CLAUDE_CACHE_REGIME_CHANGE_INVALIDATE and regime != snap.get("regime", regime):
+        return True
+
+    old_spread = snap.get("spread", 0)
+    if old_spread > 0 and cur_spread > old_spread * 1.5:  # spread widened 50%+
+        return True
+
+    return False
 
 
 # ── Score cache ───────────────────────────────────────────────────────────────
@@ -166,6 +232,19 @@ def _save_score_cache(scores: dict):
         pass
 
 
+# ── Effectiveness logging ─────────────────────────────────────────────────────
+
+def _log_effectiveness(entries: list[dict]):
+    if not TRACK_CLAUDE_DECISION_DELTA or not entries:
+        return
+    try:
+        with open(CLAUDE_EFFECTIVENESS_LOG_FILE, "a", encoding="utf-8") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+    except Exception:
+        pass
+
+
 # ── Claude batch call ─────────────────────────────────────────────────────────
 
 def _call_claude(
@@ -177,8 +256,6 @@ def _call_claude(
     vix:        float,
 ) -> dict[str, dict]:
     """Call Claude for a batch. Returns {symbol: result_dict}."""
-
-    # Compact market context — single line, only what Claude needs
     bm = (
         f"SPY:{broad.get('SPY_gap', 0):+.2f}% "
         f"QQQ:{broad.get('QQQ_gap', 0):+.2f}% "
@@ -195,7 +272,6 @@ def _call_claude(
     if earn_str:
         context_lines.append("EARN_WARN: " + earn_str)
 
-    # Compact candidate objects — short keys, only needed fields
     compact = []
     for ctx in batch_ctx:
         c  = ctx["c"]
@@ -256,6 +332,7 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
     sectors    = {c.get("sector", "Unknown") for c in candidates if c.get("sector")}
     etf_data   = _sector_etf_strength(sectors)
     earn_warns = risk.get("earnings_warns", {})
+    regime     = _get_current_regime()
 
     # Build per-candidate context dicts
     candidate_ctx = []
@@ -273,9 +350,10 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
             for n in sym_news[:3]
             if n["impact_score"] >= NEWS_MIN_IMPACT_SCORE
         ]
-        research  = get_research(sym)
-        local     = _local_score(c, research)
-        h         = _candidate_hash(c, top_news, research)
+        research   = get_research(sym)
+        local      = _local_score(c, research)
+        h          = _candidate_hash(c, top_news, research, regime)
+        snap       = _build_snap(c, top_news, regime)
         top_impact = next((n["impact_score"] for n in all_news if n["ticker"] == sym), 0)
         candidate_ctx.append({
             "c":           c,
@@ -284,13 +362,17 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
             "research":    research,
             "local_score": local,
             "hash":        h,
+            "snap":        snap,
             "top_impact":  top_impact,
         })
 
     score_cache = _load_score_cache()
-    budget      = {"calls": 0, "cache_hits": 0, "local_rejects": 0}
+    budget = {"calls": 0, "cache_hits": 0, "local_rejects": 0, "invalidated": 0}
     to_claude   = []
     results     = {}
+    eff_log     = []  # effectiveness entries to write at end
+
+    now_str = datetime.now().strftime("%H:%M")
 
     for ctx in candidate_ctx:
         sym   = ctx["sym"]
@@ -299,13 +381,24 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
         if local < CLAUDE_MIN_LOCAL_SCORE:
             budget["local_rejects"] += 1
             results[sym] = _make_local_result(ctx, local, news_stats)
+            eff_log.append(_make_eff_entry(sym, local, None, now_str,
+                                           cache_hit=False, local_only=True))
             continue
 
         cache_key = f"{sym}:{ctx['hash']}"
         if cache_key in score_cache:
-            budget["cache_hits"] += 1
             cached = score_cache[cache_key]
-            results[sym] = {**cached, "_news_stats": news_stats, "_top_news_impact": ctx["top_impact"]}
+            snap_stored = cached.get("_snap", {})
+            if snap_stored and _should_invalidate(snap_stored, ctx["c"], ctx["top_news"], regime):
+                budget["invalidated"] += 1
+                to_claude.append(ctx)
+            else:
+                budget["cache_hits"] += 1
+                results[sym] = {**cached, "_news_stats": news_stats,
+                                "_top_news_impact": ctx["top_impact"]}
+                eff_log.append(_make_eff_entry(sym, local,
+                                               cached.get("score"), now_str,
+                                               cache_hit=True, local_only=False))
             continue
 
         to_claude.append(ctx)
@@ -318,30 +411,46 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
             try:
                 batch_results = _call_claude(batch, broad, etf_data, earn_warns, risk, vix)
                 for ctx in batch:
-                    sym = ctx["sym"]
-                    p   = batch_results.get(sym, _make_local_result(ctx, ctx["local_score"], news_stats))
-                    # Derive reasoning string for backward compatibility
-                    reasons = p.get("top_reasons", [])
-                    flags   = p.get("red_flags", [])
+                    sym       = ctx["sym"]
+                    p         = batch_results.get(sym,
+                                    _make_local_result(ctx, ctx["local_score"], news_stats))
+                    reasons   = p.get("top_reasons", [])
+                    flags     = p.get("red_flags", [])
                     p["reasoning"] = "; ".join(reasons + [f"⚠ {f}" for f in flags]) or "no detail"
                     cache_key = f"{sym}:{ctx['hash']}"
-                    score_cache[cache_key] = {k: v for k, v in p.items() if not k.startswith("_")}
-                    results[sym] = {**p, "_news_stats": news_stats, "_top_news_impact": ctx["top_impact"]}
+                    # Store snap and decision metadata in cache entry
+                    cache_entry = {k: v for k, v in p.items() if not k.startswith("_")}
+                    cache_entry["_snap"]         = ctx["snap"]
+                    cache_entry["_local_score"]  = ctx["local_score"]
+                    changed = (ctx["local_score"] >= MIN_SCORE_TO_TRADE) != (p.get("score", 0) >= MIN_SCORE_TO_TRADE)
+                    cache_entry["_claude_changed_decision"] = changed
+                    score_cache[cache_key] = cache_entry
+                    results[sym] = {**p, "_news_stats": news_stats,
+                                    "_top_news_impact": ctx["top_impact"]}
+                    eff_log.append(_make_eff_entry(sym, ctx["local_score"],
+                                                   p.get("score"), now_str,
+                                                   cache_hit=False, local_only=False))
             except Exception as exc:
                 print(f"   [ANALYST] Claude batch error: {exc} — using local scores")
                 for ctx in batch:
                     sym = ctx["sym"]
                     results[sym] = _make_local_result(ctx, ctx["local_score"], news_stats)
+                    eff_log.append(_make_eff_entry(sym, ctx["local_score"], None, now_str,
+                                                   cache_hit=False, local_only=True))
     else:
         for ctx in to_claude:
             results[ctx["sym"]] = _make_local_result(ctx, ctx["local_score"], news_stats)
+            eff_log.append(_make_eff_entry(ctx["sym"], ctx["local_score"], None, now_str,
+                                           cache_hit=False, local_only=True))
 
     _save_score_cache(score_cache)
+    _log_effectiveness(eff_log)
 
     total = len(candidates)
     print(
         f"   [ANALYST] calls:{budget['calls']}  cache_hits:{budget['cache_hits']}  "
-        f"local_rejects:{budget['local_rejects']}  to_claude:{len(to_claude)}  total:{total}"
+        f"invalidated:{budget['invalidated']}  local_rejects:{budget['local_rejects']}  "
+        f"to_claude:{len(to_claude)}  total:{total}"
     )
 
     picks = list(results.values())
@@ -353,6 +462,8 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
     picks.sort(key=lambda x: x.get("score", 0), reverse=True)
     return picks
 
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_local_result(ctx: dict, score: int, news_stats: dict) -> dict:
     return {
@@ -370,4 +481,28 @@ def _make_local_result(ctx: dict, score: int, news_stats: dict) -> dict:
         "_local_only":       True,
         "_news_stats":       news_stats,
         "_top_news_impact":  ctx["top_impact"],
+    }
+
+
+def _make_eff_entry(
+    sym: str, local: int, claude: int | None, time_str: str,
+    cache_hit: bool, local_only: bool,
+) -> dict:
+    local_tradeable  = local >= MIN_SCORE_TO_TRADE
+    claude_tradeable = (claude >= MIN_SCORE_TO_TRADE) if claude is not None else None
+    changed = (
+        (claude_tradeable != local_tradeable)
+        if claude_tradeable is not None else False
+    )
+    return {
+        "date":                   date.today().isoformat(),
+        "time":                   time_str,
+        "symbol":                 sym,
+        "local_score":            local,
+        "claude_score":           claude,
+        "local_tradeable":        local_tradeable,
+        "claude_tradeable":       claude_tradeable,
+        "claude_changed_decision": changed,
+        "cache_hit":              cache_hit,
+        "local_only":             local_only,
     }
