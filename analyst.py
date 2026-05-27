@@ -411,20 +411,23 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
             # when at least one qualifying condition holds
             exploratory_gate_ok = False
             if TRADING_MODE != "LIVE" and local >= CLAUDE_MIN_LOCAL_SCORE_EXPLORATORY:
-                c_obj          = ctx["c"]
-                rvol           = c_obj.get("rel_volume", 0.0) or c_obj.get("rvol", 0.0) or 0.0
-                is_top_gapper  = bool(c_obj.get("_is_top_gapper", False))
+                c_obj           = ctx["c"]
+                research        = ctx["research"]
+                rvol            = c_obj.get("rel_volume", 0.0) or c_obj.get("rvol", 0.0) or 0.0
+                is_top_gapper   = bool(c_obj.get("_is_top_gapper", False))
                 strong_catalyst = ctx.get("top_impact", 0) >= 70
-                high_rvol      = rvol >= 2.0
-                unusual_float  = (bool(c_obj.get("_unusual_float", False))
-                                  or bool(c_obj.get("_unusual_short_interest", False)))
+                high_rvol       = rvol >= 2.0
+                float_m         = research.get("float_shares_m", 0) or 0
+                short_ratio     = research.get("short_ratio", 0) or 0
+                unusual_float   = 0 < float_m < 20          # small float < 20M shares
+                unusual_short   = short_ratio > 5            # heavily shorted
                 near_exploratory = local >= 60  # by definition (>= CLAUDE_MIN_LOCAL_SCORE_EXPLORATORY)
                 exploratory_gate_ok = (is_top_gapper or strong_catalyst or high_rvol
-                                       or near_exploratory or unusual_float)
+                                       or near_exploratory or unusual_float or unusual_short)
                 if exploratory_gate_ok:
                     print(f"   [ANALYST] {sym}: local={local} qualifies for exploratory Claude gate "
                           f"(gapper={is_top_gapper} cat={strong_catalyst} rvol={rvol:.1f} "
-                          f"float={unusual_float})")
+                          f"float={float_m:.0f}M unusual={unusual_float} short_ratio={short_ratio:.1f})")
                     ctx["_exploratory_gate_used"] = True
             if not exploratory_gate_ok:
                 budget["local_rejects"] += 1

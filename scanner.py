@@ -224,6 +224,7 @@ def scan_for_candidates() -> list[dict]:
                 "has_news":         len(news) > 0,
                 "setup_type":         setup_type,
                 "is_afternoon_setup": afternoon_cont,
+                "_is_top_gapper":     symbol in gappers,
             })
         except Exception:
             continue

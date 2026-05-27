@@ -105,10 +105,20 @@ def check_shortlist_candidate(candidate: dict) -> dict:
     }
 
     try:
-        import yfinance as yf
-        ticker_obj  = yf.Ticker(symbol)
-        fast        = ticker_obj.fast_info
-        live_price  = float(fast.last_price or 0)
+        # Use Alpaca snapshot for real-time price; fall back to yfinance (15-min delayed)
+        live_price = 0.0
+        try:
+            from config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockLatestTradeRequest
+            client     = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+            trade      = client.get_stock_latest_trade(StockLatestTradeRequest(symbol_or_symbols=symbol))
+            live_price = float(trade[symbol].price or 0)
+        except Exception:
+            pass
+        if live_price <= 0:
+            import yfinance as yf
+            live_price = float(yf.Ticker(symbol).fast_info.last_price or 0)
         if live_price <= 0:
             result["skip_reason"] = "live price unavailable"
             _flog.info(f"CHECK        {symbol:<6} SKIP live_price=0")
