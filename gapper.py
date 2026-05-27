@@ -11,8 +11,8 @@ scanner.py injects these symbols into every scan so the agent catches
 import json
 import yfinance as yf
 import pandas as pd
-from datetime import date
-from config import GAPPER_UNIVERSE, GAPPER_MIN_GAP_PCT, GAPPER_TOP_N, GAPPER_CACHE_FILE
+from datetime import date, datetime, timezone
+from config import GAPPER_UNIVERSE, GAPPER_MIN_GAP_PCT, GAPPER_TOP_N, GAPPER_CACHE_FILE, GAPPER_REFRESH_INTERVAL_MINS
 
 
 def _load_cache() -> list[str] | None:
@@ -28,9 +28,10 @@ def _load_cache() -> list[str] | None:
 
 def _save_cache(symbols: list[str], details: list[dict]):
     GAPPER_CACHE_FILE.write_text(json.dumps({
-        "date":    date.today().isoformat(),
-        "symbols": symbols,
-        "details": details,
+        "date":             date.today().isoformat(),
+        "last_refreshed_at": datetime.now(timezone.utc).isoformat(),
+        "symbols":          symbols,
+        "details":          details,
     }, indent=2))
 
 
@@ -123,3 +124,28 @@ def get_daily_gappers() -> list[str]:
     """Return today's gapper symbols from cache. Empty list if scan not yet run."""
     cached = _load_cache()
     return cached if cached is not None else []
+
+
+def refresh_gappers_intraday(interval_mins: int | None = None) -> list[str]:
+    """
+    Lightweight intraday refresh — only re-scans if cache is older than interval_mins.
+    Called at the start of each --scan cycle to keep gapper list current.
+    Returns updated symbol list (may be same as before if cache still fresh).
+    """
+    ivl = interval_mins or GAPPER_REFRESH_INTERVAL_MINS
+    try:
+        if GAPPER_CACHE_FILE.exists():
+            data = json.loads(GAPPER_CACHE_FILE.read_text())
+            if data.get("date") == date.today().isoformat():
+                refreshed_at = data.get("last_refreshed_at")
+                if refreshed_at:
+                    age_mins = (
+                        datetime.now(timezone.utc)
+                        - datetime.fromisoformat(refreshed_at)
+                    ).total_seconds() / 60
+                    if age_mins < ivl:
+                        return data["symbols"]
+    except Exception:
+        pass
+    print(f"   [GAPPER] Intraday refresh (>{ivl}min since last scan)...")
+    return run_gapper_scan(force=True)

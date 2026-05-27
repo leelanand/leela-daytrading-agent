@@ -24,7 +24,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from alpaca.trading.client import TradingClient
 from config import (
-    ALPACA_API_KEY, ALPACA_SECRET_KEY, PAPER_TRADING,
+    ALPACA_API_KEY, ALPACA_SECRET_KEY, PAPER_TRADING, TRADING_MODE,
     MIN_SCORE_TO_TRADE, CHOPPY_MIN_SCORE, WATCHLIST_SCORE, KILL_SWITCH,
     BLOCK_MIDDAY, BLOCK_MIDDAY_START, BLOCK_MIDDAY_END,
     MIN_MOMENTUM_TO_TRADE,
@@ -33,6 +33,14 @@ from config import (
     CHAOS_LOCKOUT_END_ET,
     TIER_HIGH_MIN, TIER_ELITE_MIN, ELITE_SIZE_BOOST, MAX_POSITION_SIZE_PCT,
     TAKE_PROFIT_PCT,
+    get_min_score,
+    LIVE_BASE_SCORE,
+    DECAY_BAND_1_MINS, DECAY_BAND_1_POINTS,
+    DECAY_BAND_2_MINS, DECAY_BAND_2_POINTS,
+    DECAY_BAND_3_MINS, DECAY_BAND_3_POINTS,
+    QUALITY_OVERRIDE_MIN_RVOL, QUALITY_OVERRIDE_MAX_SPREAD,
+    QUALITY_OVERRIDE_NEWS_IMPACT, QUALITY_OVERRIDE_REQUIRE_ALL,
+    QUALITY_OVERRIDE_MIN_CONDITIONS, QUALITY_OVERRIDE_MAX_GAP_PTS,
 )
 from scanner import scan_for_candidates
 from analyst import analyse_candidates
@@ -70,6 +78,65 @@ from feed_logger import log_trade_feed_inputs, log_feed_event, \
 from event_risk import check_earnings, check_halt
 
 ET = ZoneInfo("America/New_York")
+
+
+# ── Mode helpers ──────────────────────────────────────────────────────────────
+
+def _apply_score_decay(score: int, age_mins: float) -> tuple[int, int]:
+    """Returns (decayed_score, decay_points). Decay increases with candidate age."""
+    if age_mins <= DECAY_BAND_1_MINS:
+        return score, 0
+    elif age_mins <= DECAY_BAND_2_MINS:
+        return score - DECAY_BAND_2_POINTS, DECAY_BAND_2_POINTS
+    else:
+        return score - DECAY_BAND_3_POINTS, DECAY_BAND_3_POINTS
+
+
+def _quality_override(
+    score: int, effective_min: int,
+    rvol: float, spread_pct: float, news_impact: int,
+    orb_breakout: bool, pullback_ok: bool,
+    alignment: str, mom_ok: bool, no_failed_bo: bool,
+) -> tuple[bool, str]:
+    """
+    Check whether a quality override permits a below-threshold candidate.
+    PAPER: 5/7 conditions; LIVE: all 7 conditions.
+    Returns (allowed, reason_string).
+    """
+    if score >= effective_min:
+        return False, "already meets threshold"
+    gap = effective_min - score
+    if gap > QUALITY_OVERRIDE_MAX_GAP_PTS:
+        return False, f"gap {gap}pts exceeds override ceiling"
+
+    conditions = {
+        "rvol_strong":   rvol >= QUALITY_OVERRIDE_MIN_RVOL,
+        "tight_spread":  spread_pct <= QUALITY_OVERRIDE_MAX_SPREAD,
+        "setup_confirm": orb_breakout or pullback_ok,
+        "mkt_aligned":   alignment in ("BULLISH", "STRONG_BULLISH", "ALIGNED"),
+        "news_strong":   news_impact >= QUALITY_OVERRIDE_NEWS_IMPACT,
+        "momentum_ok":   mom_ok,
+        "no_failed_bo":  no_failed_bo,
+    }
+    met = sum(v for v in conditions.values())
+
+    if QUALITY_OVERRIDE_REQUIRE_ALL:
+        allowed = all(conditions.values())
+    else:
+        allowed = met >= QUALITY_OVERRIDE_MIN_CONDITIONS
+
+    if allowed:
+        return True, f"quality_override: {met}/7 conditions met"
+    failed = [k for k, v in conditions.items() if not v]
+    return False, f"quality_override failed ({met}/7) — missing: {failed}"
+
+
+def _score_band(score: int) -> str:
+    if score >= 90: return "elite"
+    if score >= 85: return "high"
+    if score >= 78: return "normal"
+    if score >= 70: return "below_live"
+    return "experimental"
 
 
 def _client() -> TradingClient:
@@ -327,6 +394,13 @@ def _scan_and_trade(paper_mode: bool = False):
     recent_wr = rolling.get("win_rate", 0.50)
     held      = open_symbols()
 
+    # Intraday gapper refresh — keeps dynamic movers current (every 15 min)
+    try:
+        from gapper import refresh_gappers_intraday
+        refresh_gappers_intraday()
+    except Exception:
+        pass
+
     prescan = load_valid_candidates()
 
     # Pre-warm WS cache with a burst streaming session for candidate symbols
@@ -346,6 +420,21 @@ def _scan_and_trade(paper_mode: bool = False):
         # Re-score with live data to drop any candidates that have faded since prescan
         print(f"   Re-scoring {len(candidates)} prescan candidate(s) with live data...")
         candidates = analyse_candidates(candidates)
+
+        # Apply confidence decay based on candidate age then re-check thresholds
+        for c in candidates:
+            age_mins = c.get("_age_mins", 0.0)
+            raw_score = c.get("score", 0)
+            decayed, decay_pts = _apply_score_decay(raw_score, age_mins)
+            if decay_pts:
+                c["score"]         = decayed
+                c["_decay_points"] = decay_pts
+                c["_raw_score"]    = raw_score
+                # Re-evaluate tradeable with decayed score
+                eff_min = get_min_score(regime, c.get("setup_type"))
+                c["tradeable"]      = decayed >= eff_min
+                c["_effective_min"] = eff_min
+
         candidates = [c for c in candidates if c.get("tradeable") and c["symbol"] not in held]
         if not candidates:
             print("   No candidates passed re-score threshold.")
@@ -409,6 +498,11 @@ def _scan_and_trade(paper_mode: bool = False):
         vol_pct       = pick.get("volatility_pct", 0.0)
         spread_pct    = pick.get("spread_pct", 0.0)
         setup_type    = pick.get("setup_type", "unknown")
+        age_mins      = pick.get("_age_mins", 0.0)
+        is_stale      = pick.get("_stale", False)
+
+        # Effective minimum for this regime + setup type
+        effective_min = get_min_score(regime, setup_type)
 
         # Timestamps for telemetry
         signal_ts   = pick.get("shortlisted_at") or pick.get("_prescan_ts")
@@ -443,6 +537,16 @@ def _scan_and_trade(paper_mode: bool = False):
                 "score": score, "reason": f"halt: {halt_desc}",
                 "setup_type": setup_type,
             })
+            continue
+
+        # Score gate — check effective minimum for this regime + setup combination
+        if score < effective_min:
+            log_audit("TRADE_REJECTED", symbol, {
+                "score": score, "effective_min": effective_min,
+                "regime": regime, "setup_type": setup_type,
+                "reason": f"score {score} < effective_min {effective_min} ({regime}/{setup_type})",
+            })
+            print(f"   [SKIP] {symbol}: score {score} < {effective_min} ({regime}/{setup_type})")
             continue
 
         # LOW_VOLUME confidence gate — require higher score than normal
@@ -483,6 +587,10 @@ def _scan_and_trade(paper_mode: bool = False):
             bars_1min = _get_1min_bars(symbol, 30)   # 30 bars covers ORB + ATR
         except Exception:
             pass
+
+        # Quality override pre-check — evaluated before ORB/pullback so we have early info
+        # (full check happens after ORB/pullback results are known, below)
+        _quality_override_pending = score < effective_min  # already gated above, but for late decay
 
         # ORB check (spec point 3) — informational quality signal, not a blocker
         orb_status: dict = {}
@@ -629,6 +737,44 @@ def _scan_and_trade(paper_mode: bool = False):
         if "volume_divergence" in quote_reason:
             log_feed_event("VOLUME_DIVERGENCE", {"symbol": symbol, "detail": quote_reason})
 
+        # Quality override check — now that we have ORB, pullback, and quality data
+        qo_allowed, qo_reason = _quality_override(
+            score, effective_min,
+            rvol=iq.get("rvol", 0.0),
+            spread_pct=spread_pct,
+            news_impact=pick.get("_top_news_impact", 0),
+            orb_breakout=orb_breakout,
+            pullback_ok=pullback_result.get("pullback_detected", False),
+            alignment=alignment,
+            mom_ok=mom["strength"] in MIN_MOMENTUM_TO_TRADE,
+            no_failed_bo=not fb_failed,
+        )
+        quality_override_applied = False
+        if score < effective_min:
+            if qo_allowed:
+                quality_override_applied = True
+                print(f"   [QUALITY OVERRIDE] {symbol}: {qo_reason}")
+                log_audit("QUALITY_OVERRIDE", symbol, {
+                    "score": score, "effective_min": effective_min,
+                    "reason": qo_reason, "setup_type": setup_type,
+                    "trading_mode": TRADING_MODE,
+                })
+            else:
+                print(f"   [SKIP] {symbol}: {qo_reason}")
+                log_audit("TRADE_REJECTED", symbol, {
+                    "score": score, "reason": qo_reason,
+                    "setup_type": setup_type, "effective_min": effective_min,
+                })
+                continue
+
+        # Experimental flag — trade is experimental if score is below LIVE baseline
+        is_experimental = score < LIVE_BASE_SCORE
+        reason_allowed  = (
+            "quality_override"     if quality_override_applied else
+            "regime_relaxed"       if effective_min < LIVE_BASE_SCORE else
+            "threshold_met"
+        )
+
         audit_details = {
             "score":            score,
             "tier":             tier,
@@ -647,6 +793,14 @@ def _scan_and_trade(paper_mode: bool = False):
             "pullback_quality": pullback_result.get("pullback_quality", "N/A"),
             "vwap":             vwap,
             "spread_pct":       spread_pct,
+            "trading_mode":     TRADING_MODE,
+            "effective_min":    effective_min,
+            "quality_override": quality_override_applied,
+            "experimental":     is_experimental,
+            "reason_allowed":   reason_allowed,
+            "decay_points":     pick.get("_decay_points", 0),
+            "age_mins":         round(age_mins, 1),
+            "stale":            is_stale,
         }
 
         # Log all feed inputs used for this decision
@@ -681,12 +835,36 @@ def _scan_and_trade(paper_mode: bool = False):
         submit_ts = datetime.now(ET).isoformat()
 
         if paper_mode:
+            exp_tag = " [EXPERIMENTAL]" if is_experimental else ""
+            qo_tag  = " [QUALITY_OVERRIDE]" if quality_override_applied else ""
             print(f"   [PAPER] WOULD BUY {symbol}  score={score}/100  tier={tier}  "
                   f"{size_note}  stop={stop_pct:.1%}  setup={setup_type}  "
-                  f"orb={'Y' if orb_breakout else 'n'}  pullback={pullback_result.get('pullback_quality','N/A')}")
+                  f"orb={'Y' if orb_breakout else 'n'}  pullback={pullback_result.get('pullback_quality','N/A')}"
+                  f"{exp_tag}{qo_tag}")
             print(f"   [PAPER] {shares}sh @ ${price:.2f} = ${cost:,.0f} | {reasoning}")
             log_paper_trade(symbol, shares, price, "BUY", score, reasoning)
             log_audit("PAPER_TRADE", symbol, audit_details)
+            # Rich experimental tagging for PAPER mode learning
+            log_audit("PAPER_TRADE_TAGS", symbol, {
+                "setup_type":       setup_type,
+                "regime":           regime,
+                "score_band":       _score_band(score),
+                "score":            score,
+                "effective_min":    effective_min,
+                "experimental":     is_experimental,
+                "quality_override": quality_override_applied,
+                "reason_allowed":   reason_allowed,
+                "orb_status":       orb_breakout,
+                "pullback_status":  pullback_result.get("pullback_quality", "N/A"),
+                "catalyst_quality": pick.get("_top_news_impact", 0),
+                "vwap_distance_pct": round((price - vwap) / vwap * 100, 3) if vwap else None,
+                "rvol":             round(iq.get("rvol", 0.0), 2),
+                "spread_pct":       spread_pct,
+                "decay_points":     pick.get("_decay_points", 0),
+                "age_mins":         round(age_mins, 1),
+                "stale":            is_stale,
+                "trading_mode":     TRADING_MODE,
+            })
         else:
             print(f"   BUY {symbol}  score={score}/100  tier={tier}  {size_note}  "
                   f"stop={stop_pct:.1%}  setup={setup_type}  "

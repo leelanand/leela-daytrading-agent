@@ -25,6 +25,7 @@ from config import (
     CLAUDE_CACHE_NEW_CATALYST_INVALIDATE,
     TRACK_CLAUDE_DECISION_DELTA, CLAUDE_EFFECTIVENESS_LOG_FILE,
     REGIME_CACHE_FILE,
+    get_min_score,
 )
 from news_feed import get_all_news, news_for_symbol
 from event_risk import get_risk_summary
@@ -453,11 +454,23 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
         f"to_claude:{len(to_claude)}  total:{total}"
     )
 
+    # Preserve original candidate fields (setup_type, price, VWAP, etc.) not provided by scoring
+    orig_map = {c["symbol"]: c for c in candidates}
     picks = list(results.values())
     for p in picks:
-        score = p.get("score", 0)
-        p["tradeable"] = score >= MIN_SCORE_TO_TRADE
-        p["watchlist"] = WATCHLIST_SCORE <= score < MIN_SCORE_TO_TRADE
+        orig = orig_map.get(p["symbol"], {})
+        for k, v in orig.items():
+            if k not in p:
+                p[k] = v
+
+    # Apply setup-type and regime-aware minimum thresholds
+    for p in picks:
+        score      = p.get("score", 0)
+        setup_t    = p.get("setup_type")
+        eff_min    = get_min_score(regime, setup_t)
+        p["tradeable"]      = score >= eff_min
+        p["watchlist"]      = WATCHLIST_SCORE <= score < eff_min
+        p["_effective_min"] = eff_min
 
     picks.sort(key=lambda x: x.get("score", 0), reverse=True)
     return picks

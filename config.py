@@ -294,6 +294,59 @@ CLAUDE_RESEARCH_TOP_N = 10   # send only top N symbols by research interest to C
 TRACK_CLAUDE_DECISION_DELTA   = True
 CLAUDE_EFFECTIVENESS_LOG_FILE = Path(__file__).parent / "claude_effectiveness.jsonl"
 
+# ── Trading Mode (PAPER or LIVE) ──────────────────────────────────────────────
+TRADING_MODE = os.getenv("TRADING_MODE", "PAPER" if os.getenv("PAPER_TRADING", "true").lower() == "true" else "LIVE").upper()
+
+if TRADING_MODE == "PAPER":
+    import config_paper as _mode
+else:
+    import config_live as _mode
+
+# Override flat threshold constants with mode-appropriate values
+MIN_SCORE_TO_TRADE    = _mode.SCORE_THRESHOLDS["base"]
+CHOPPY_MIN_SCORE      = _mode.SCORE_THRESHOLDS["CHOPPY"]
+LOW_VOLUME_MIN_SCORE  = _mode.SCORE_THRESHOLDS["LOW_VOLUME"]
+CANDIDATE_EXPIRY_MINS = _mode.CANDIDATE_EXPIRY_MINS
+
+# Quality override parameters
+QUALITY_OVERRIDE_MIN_RVOL       = _mode.QUALITY_OVERRIDE_MIN_RVOL
+QUALITY_OVERRIDE_MAX_SPREAD     = _mode.QUALITY_OVERRIDE_MAX_SPREAD
+QUALITY_OVERRIDE_NEWS_IMPACT    = _mode.QUALITY_OVERRIDE_NEWS_IMPACT
+QUALITY_OVERRIDE_REQUIRE_ALL    = _mode.QUALITY_OVERRIDE_REQUIRE_ALL
+QUALITY_OVERRIDE_MIN_CONDITIONS = _mode.QUALITY_OVERRIDE_MIN_CONDITIONS
+QUALITY_OVERRIDE_MAX_GAP_PTS    = _mode.QUALITY_OVERRIDE_MAX_GAP_PTS
+
+# Candidate confidence decay parameters
+DECAY_BAND_1_MINS   = _mode.DECAY_BAND_1_MINS
+DECAY_BAND_1_POINTS = _mode.DECAY_BAND_1_POINTS
+DECAY_BAND_2_MINS   = _mode.DECAY_BAND_2_MINS
+DECAY_BAND_2_POINTS = _mode.DECAY_BAND_2_POINTS
+DECAY_BAND_3_MINS   = _mode.DECAY_BAND_3_MINS
+DECAY_BAND_3_POINTS = _mode.DECAY_BAND_3_POINTS
+DECAY_EXPIRE_MINS   = _mode.DECAY_EXPIRE_MINS
+DECAY_STRICT_EXPIRE = _mode.DECAY_STRICT_EXPIRE
+
+GAPPER_REFRESH_INTERVAL_MINS = _mode.GAPPER_REFRESH_INTERVAL_MINS
+
+# Live base score — always 78, used to tag experimental trades in PAPER mode
+LIVE_BASE_SCORE = 78
+
+
+def get_min_score(regime: str = "base", setup_type: str | None = None) -> int:
+    """
+    Return mode + regime + setup-aware minimum trade score.
+    Setup threshold raises the bar for risky setups (midday reversal, low-float)
+    or confirms structure for easier setups (ORB, pullback) — effective = max of both.
+    """
+    regime_score = _mode.SCORE_THRESHOLDS.get(regime, _mode.SCORE_THRESHOLDS["base"])
+    if regime_score >= 99:
+        return 99
+    if setup_type and setup_type in _mode.SETUP_THRESHOLDS:
+        setup_score = _mode.SETUP_THRESHOLDS[setup_type]
+        return max(regime_score, setup_score)
+    return regime_score
+
+
 # ── Watchlist ──────────────────────────────────────────────────────────────────
 WATCHLIST = [
     "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "META", "GOOGL", "AMZN", "NFLX", "AVGO",

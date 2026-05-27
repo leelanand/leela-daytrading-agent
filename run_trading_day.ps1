@@ -1,4 +1,4 @@
-# Leela Day Trading Agent — Full Daily Automation
+﻿# Leela Day Trading Agent — Full Daily Automation
 # Scheduled to run weekdays at 14:30 BST (9:30 ET).
 # Handles research → prescan → scan loop → monitor loop → force close → EOD reports.
 #
@@ -151,3 +151,4 @@ Start-Sleep -Seconds 300  # 5 min for Alpaca to fully settle
 Run-Agent @("--performance")
 
 Write-Log "=== Trading day complete ==="
+

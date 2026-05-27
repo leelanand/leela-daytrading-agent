@@ -1,7 +1,7 @@
 """Save, load, and expire prescan candidates."""
 import json
 from datetime import datetime, timezone
-from config import CANDIDATES_FILE, CANDIDATE_EXPIRY_MINS
+from config import CANDIDATES_FILE, CANDIDATE_EXPIRY_MINS, DECAY_EXPIRE_MINS, DECAY_STRICT_EXPIRE
 
 
 def save_candidates(candidates: list[dict]):
@@ -24,7 +24,16 @@ def load_valid_candidates() -> list[dict]:
             print(f"   [PRESCAN] Candidates expired ({age_mins:.0f} min old, limit {CANDIDATE_EXPIRY_MINS} min)")
             return []
         candidates = payload.get("candidates", [])
-        print(f"   Loaded {len(candidates)} prescan candidates ({age_mins:.0f} min old)")
+        # Tag each candidate with age metadata for decay and logging
+        stale = age_mins > DECAY_EXPIRE_MINS
+        if stale and DECAY_STRICT_EXPIRE:
+            print(f"   [PRESCAN] Candidates stale ({age_mins:.0f} min > {DECAY_EXPIRE_MINS} min LIVE limit) — expired")
+            return []
+        for c in candidates:
+            c["_age_mins"] = round(age_mins, 1)
+            c["_stale"]    = stale
+        stale_tag = " [STALE]" if stale else ""
+        print(f"   Loaded {len(candidates)} prescan candidates ({age_mins:.0f} min old){stale_tag}")
         return candidates
     except Exception as e:
         print(f"   [PRESCAN] Failed to load candidates: {e}")

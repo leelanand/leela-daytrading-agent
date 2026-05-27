@@ -205,6 +205,12 @@ def generate_daily_performance() -> dict:
     # Claude effectiveness
     perf["claude_effectiveness"] = get_claude_effectiveness(today)
 
+    # Setup promotion candidates
+    try:
+        perf["setup_promotion"] = get_setup_promotion_candidates()
+    except Exception:
+        perf["setup_promotion"] = []
+
     PERFORMANCE_FILE.write_text(json.dumps(perf, indent=2))
     with open(PERF_HISTORY_FILE, "a") as f:
         f.write(json.dumps({k: v for k, v in perf.items() if k != "rejections"}) + "\n")
@@ -298,6 +304,28 @@ def print_performance_report(perf: dict):
     try:
         losers = perf.get("high_score_losers") or high_score_loser_review()
         print_high_score_loser_review(losers)
+    except Exception:
+        pass
+
+    # No-trade reason distribution
+    try:
+        print_no_trade_reason_distribution(perf)
+    except Exception:
+        pass
+
+    # PAPER vs LIVE comparison
+    try:
+        from config import TRADING_MODE
+        if TRADING_MODE == "PAPER":
+            print_paper_vs_live_comparison(perf)
+    except Exception:
+        pass
+
+    # Setup promotion framework
+    try:
+        promo = get_setup_promotion_candidates()
+        if promo:
+            print_promotion_report(promo)
     except Exception:
         pass
 
@@ -501,6 +529,222 @@ def print_claude_effectiveness(eff: dict):
     elif eff["decision_change_rate"] > 0.40:
         print(f"\n  ⓘ  Claude changed >40% of decisions — it is adding material value; "
               f"keep current threshold.")
+
+
+# ── No-Trade Reason Distribution ──────────────────────────────────────────────
+
+_REJECTION_CATEGORIES = {
+    "spread":           ["spread", "wide_spread"],
+    "rvol_weak":        ["rvol", "rel_volume", "low_volume_stock_rvol"],
+    "stale_candidate":  ["stale", "expired", "candidate_age", "decay"],
+    "regime":           ["regime", "no_trade", "low_volume_mode"],
+    "price_extension":  ["vol_extension", "move_from_open", "overextended"],
+    "failed_momentum":  ["momentum", "weakening", "exhausted"],
+    "failed_orb":       ["orb", "opening_range"],
+    "failed_pullback":  ["pullback_reject"],
+    "risk_cap":         ["daily_loss", "max_positions", "max_trades", "risk"],
+    "duplicate":        ["duplicate_exposure", "symbol_taken"],
+    "feed_quality":     ["intraday_quality", "data_quality", "feed"],
+    "event_risk":       ["earnings", "halt"],
+    "weak_window":      ["weak_window", "midday_block", "lockout"],
+    "adaptive_pause":   ["adaptive_pause"],
+    "failed_breakout":  ["failed_breakout"],
+    "quality_override_failed": ["quality_override failed"],
+}
+
+
+def _categorize_rejection(reason_str: str) -> str:
+    r = reason_str.lower()
+    for category, keywords in _REJECTION_CATEGORIES.items():
+        if any(kw in r for kw in keywords):
+            return category
+    return "other"
+
+
+def print_no_trade_reason_distribution(perf: dict):
+    """Print a categorized breakdown of why candidates were rejected today."""
+    rejections = perf.get("rejections", {})
+    if not rejections:
+        return
+    categorized: dict[str, int] = {}
+    for reason, cnt in rejections.items():
+        cat = _categorize_rejection(reason)
+        categorized[cat] = categorized.get(cat, 0) + cnt
+
+    total = sum(categorized.values())
+    print(f"\n  No-Trade Reason Distribution ({total} rejections):")
+    for cat, cnt in sorted(categorized.items(), key=lambda x: -x[1]):
+        bar = "#" * min(20, cnt)
+        pct = cnt / total * 100
+        print(f"    {cat:<28s}  {cnt:3d}  {pct:4.0f}%  {bar}")
+
+
+# ── Setup Promotion Framework ──────────────────────────────────────────────────
+
+def get_setup_promotion_candidates(
+    min_trades: int = 20,
+    min_pf: float = 1.3,
+    min_wr: float = 0.45,
+    lookback_days: int = 60,
+) -> list[dict]:
+    """
+    Identify PAPER setups ready for promotion to LIVE trading.
+    Criteria: min_trades trades, positive expectancy, profit_factor >= min_pf,
+              avg_win > avg_loss, works across multiple days.
+    """
+    since = (date.today() - timedelta(days=lookback_days)).isoformat()
+    con   = sqlite3.connect(DB_PATH)
+
+    # Get ORDER_PLACED events with setup_type
+    placements = con.execute(
+        "SELECT symbol, details, ts, date FROM audit_log "
+        "WHERE action='ORDER_PLACED' AND date >= ?",
+        (since,),
+    ).fetchall()
+
+    # Get P&L per symbol
+    trade_pnl = {}
+    for r in con.execute(
+        "SELECT symbol, pnl, date FROM trades WHERE date >= ?", (since,)
+    ).fetchall():
+        key = (r[0], r[2])
+        trade_pnl[key] = r[1]
+
+    con.close()
+
+    by_setup: dict[str, dict] = {}
+    for sym, details_str, ts, trade_date in placements:
+        try:
+            d = json.loads(details_str)
+        except Exception:
+            d = {}
+        setup = d.get("setup_type") or d.get("setup") or "unknown"
+        if setup == "unknown":
+            continue
+        pnl = trade_pnl.get((sym, trade_date))
+        if pnl is None:
+            continue
+        s = by_setup.setdefault(setup, {"pnls": [], "days": set(), "scores": []})
+        s["pnls"].append(pnl)
+        s["days"].add(trade_date)
+        if d.get("score"):
+            s["scores"].append(d["score"])
+
+    promotable = []
+    for setup, data in by_setup.items():
+        pnls  = data["pnls"]
+        n     = len(pnls)
+        if n < min_trades:
+            continue
+        wins    = [p for p in pnls if p > 0]
+        losses  = [p for p in pnls if p <= 0]
+        wr      = len(wins) / n
+        avg_win = sum(wins) / len(wins)   if wins   else 0.0
+        avg_los = abs(sum(losses) / len(losses)) if losses else 0.0
+        gp      = sum(wins)
+        gl      = abs(sum(losses))
+        pf      = gp / gl if gl > 0 else (999.0 if gp > 0 else 0.0)
+        exp     = (wr * avg_win) - ((1 - wr) * avg_los)
+        n_days  = len(data["days"])
+        avg_sc  = round(sum(data["scores"]) / len(data["scores"]), 1) if data["scores"] else 0
+
+        ready = (
+            n >= min_trades
+            and exp > 0
+            and pf >= min_pf
+            and wr >= min_wr
+            and avg_win > avg_los
+            and n_days >= 3
+        )
+        promotable.append({
+            "setup_type":     setup,
+            "trades":         n,
+            "win_rate":       round(wr, 3),
+            "profit_factor":  round(pf, 2),
+            "expectancy":     round(exp, 2),
+            "avg_win":        round(avg_win, 2),
+            "avg_loss":       round(avg_los, 2),
+            "days_traded":    n_days,
+            "avg_score":      avg_sc,
+            "promote_ready":  ready,
+        })
+
+    promotable.sort(key=lambda x: (-x["profit_factor"], -x["expectancy"]))
+    return promotable
+
+
+def print_promotion_report(candidates: list[dict]):
+    """Print setup promotion status."""
+    if not candidates:
+        return
+    print(f"\n  Setup Promotion Framework ({len(candidates)} setups tracked):")
+    print(f"  {'Setup':<22s} {'N':>4} {'WR':>5} {'PF':>5} {'Exp':>7} {'AvgW':>7} {'AvgL':>7} {'Days':>4} {'Status'}")
+    print(f"  {'-'*84}")
+    for s in candidates:
+        status = "PROMOTE" if s["promote_ready"] else "building"
+        print(f"  {s['setup_type']:<22s} {s['trades']:>4} {s['win_rate']:>4.0%} "
+              f"{s['profit_factor']:>5.2f} ${s['expectancy']:>+6.2f} "
+              f"${s['avg_win']:>6.2f} ${s['avg_loss']:>6.2f} {s['days_traded']:>4}  {status}")
+
+
+# ── PAPER vs LIVE Comparison ───────────────────────────────────────────────────
+
+def print_paper_vs_live_comparison(perf: dict):
+    """
+    Compare all PAPER trades vs the subset that would have qualified as LIVE.
+    Uses PAPER_TRADE_TAGS audit entries which store effective_min and experimental flags.
+    """
+    today = date.today().isoformat()
+    con   = sqlite3.connect(DB_PATH)
+    tags  = con.execute(
+        "SELECT symbol, details FROM audit_log WHERE action='PAPER_TRADE_TAGS' AND date=?",
+        (today,),
+    ).fetchall()
+    con.close()
+
+    if not tags:
+        return
+
+    all_trades = []
+    for sym, details_str in tags:
+        try:
+            d = json.loads(details_str)
+            d["symbol"] = sym
+            all_trades.append(d)
+        except Exception:
+            pass
+
+    total      = len(all_trades)
+    live_elig  = [t for t in all_trades if not t.get("experimental", True)]
+    experim    = [t for t in all_trades if t.get("experimental", False)]
+    qo_trades  = [t for t in all_trades if t.get("quality_override", False)]
+
+    print(f"\n  PAPER vs LIVE Comparison ({today}):")
+    print(f"  {'─'*52}")
+    print(f"  Total PAPER trades          : {total}")
+    print(f"  LIVE-eligible (score>=78)    : {len(live_elig)}")
+    print(f"  Experimental (below LIVE bar): {len(experim)}")
+    print(f"  Quality override applied    : {len(qo_trades)}")
+
+    if all_trades:
+        by_band: dict[str, int] = {}
+        for t in all_trades:
+            band = t.get("score_band", "unknown")
+            by_band[band] = by_band.get(band, 0) + 1
+        print(f"\n  By score band:")
+        for band in ("elite", "high", "normal", "below_live", "experimental"):
+            cnt = by_band.get(band, 0)
+            if cnt:
+                print(f"    {band:<16s}  {cnt}")
+
+    if all_trades:
+        by_setup: dict[str, int] = {}
+        for t in all_trades:
+            s = t.get("setup_type", "unknown")
+            by_setup[s] = by_setup.get(s, 0) + 1
+        print(f"\n  By setup type:")
+        for s, cnt in sorted(by_setup.items(), key=lambda x: -x[1]):
+            print(f"    {s:<22s}  {cnt}")
 
 
 def should_pause_trading() -> tuple[bool, str]:
