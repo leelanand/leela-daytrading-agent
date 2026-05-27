@@ -207,6 +207,45 @@ FEED_QUALITY_FILE            = Path(__file__).parent / "feed_quality.json"
 FEED_HEALTH_STALE_QUOTE_SECS = 60    # Alpaca quote age threshold for staleness alert
 FEED_HEALTH_SPIKE_PCT        = 5.0   # intraday move that triggers abnormal-spike flag
 
+# ── Shortlist Monitor ─────────────────────────────────────────────────────────
+SHORTLIST_MONITOR_SECS = 45       # seconds between shortlist re-checks
+SHORTLIST_STATE_FILE   = Path(__file__).parent / "shortlist_state.json"
+
+# ── Pullback Entry ─────────────────────────────────────────────────────────────
+PULLBACK_ENABLED       = True
+PULLBACK_EMA_PERIOD    = 9
+PULLBACK_VWAP_MAX_PCT  = 1.0      # within 1% of VWAP = good pullback
+PULLBACK_MAX_WAIT_BARS = 5        # wait up to 5 bars for pullback
+
+# ── Opening Range Breakout ────────────────────────────────────────────────────
+ORB_ENABLED              = True
+ORB_5MIN_ENABLED         = True
+ORB_15MIN_ENABLED        = True
+ORB_VOLUME_CONFIRM_RATIO = 1.5    # breakout volume must be >= 1.5x avg
+
+# ── Opening Chaos Lockout ─────────────────────────────────────────────────────
+CHAOS_LOCKOUT_END_ET = (9, 45)    # no new entries before 9:45 ET
+
+# ── A+ Setup Tiering ──────────────────────────────────────────────────────────
+TIER_NORMAL_MIN  = 78
+TIER_HIGH_MIN    = 85
+TIER_ELITE_MIN   = 90
+ELITE_SIZE_BOOST = 0.25           # elite gets +25% to base size (before max cap)
+
+# ── Volatility-Adjusted Extension Check ───────────────────────────────────────
+ATR_PERIOD                    = 14       # bars for ATR calculation
+VOLATILITY_EXTENSION_ATR_MULT = 2.0     # reject if price > 2x ATR above VWAP
+VOLATILITY_EXTENSION_ENABLED  = True
+
+# ── ATR-Aware Stops ───────────────────────────────────────────────────────────
+ATR_STOP_ENABLED    = True
+ATR_STOP_MULTIPLIER = 1.5         # stop = entry - (ATR * multiplier)
+ATR_MIN_STOP_PCT    = 0.008       # never tighter than 0.8%
+ATR_MAX_STOP_PCT    = 0.025       # never wider than 2.5%
+
+# ── Execution Telemetry ───────────────────────────────────────────────────────
+TELEMETRY_LOG_FILE = Path(__file__).parent / "execution_telemetry.jsonl"
+
 # ── Watchlist ──────────────────────────────────────────────────────────────────
 WATCHLIST = [
     "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "META", "GOOGL", "AMZN", "NFLX", "AVGO",

@@ -193,6 +193,14 @@ def generate_daily_performance() -> dict:
         },
     }
 
+    # High-score loser review
+    losers = []
+    try:
+        losers = high_score_loser_review()
+    except Exception:
+        pass
+    perf["high_score_losers"] = losers
+
     PERFORMANCE_FILE.write_text(json.dumps(perf, indent=2))
     with open(PERF_HISTORY_FILE, "a") as f:
         f.write(json.dumps({k: v for k, v in perf.items() if k != "rejections"}) + "\n")
@@ -281,6 +289,13 @@ def print_performance_report(perf: dict):
             print(f"  ✓  Positive expectancy ${exp:+.2f}/trade")
         if exp < 0:
             print(f"  ⚠  Negative expectancy ${exp:+.2f} — strategy losing edge, pause and review")
+
+    # High-score loser review
+    try:
+        losers = perf.get("high_score_losers") or high_score_loser_review()
+        print_high_score_loser_review(losers)
+    except Exception:
+        pass
 
     print(f"{'='*64}\n")
 
@@ -388,3 +403,164 @@ def should_pause_trading() -> tuple[bool, str]:
         return True, (f"rolling win rate {perf['win_rate']:.0%} below "
                       f"{MIN_WIN_RATE_TO_TRADE:.0%} threshold")
     return False, "performance ok"
+
+
+# ── High-Score Loser Review ────────────────────────────────────────────────────
+
+def high_score_loser_review(conn=None) -> list[dict]:
+    """
+    Find all losing trades with score >= MIN_SCORE_TO_TRADE (78).
+    Enriches each record with audit log details where available.
+    Returns list sorted by score descending.
+    """
+    from config import MIN_SCORE_TO_TRADE
+    since = (date.today() - timedelta(days=PERF_LOOKBACK_DAYS)).isoformat()
+    _conn = conn or sqlite3.connect(DB_PATH)
+    own   = conn is None
+
+    try:
+        # Losing trades
+        trades = _conn.execute(
+            "SELECT symbol, shares, entry, exit_price, pnl, pnl_pct, ts "
+            "FROM trades WHERE date >= ? AND pnl <= 0",
+            (since,),
+        ).fetchall()
+
+        if not trades:
+            return []
+
+        # Fetch corresponding ORDER_PLACED audit records for metadata
+        placed = _conn.execute(
+            "SELECT symbol, details, ts FROM audit_log "
+            "WHERE action='ORDER_PLACED' AND date >= ?",
+            (since,),
+        ).fetchall()
+    finally:
+        if own:
+            _conn.close()
+
+    # Build a lookup from symbol→latest ORDER_PLACED details
+    placed_map: dict[str, dict] = {}
+    for sym, details_str, ts in placed:
+        try:
+            d = json.loads(details_str)
+        except Exception:
+            d = {}
+        placed_map[sym] = {"details": d, "ts": ts}
+
+    losers = []
+    for symbol, shares, entry, exit_price, pnl, pnl_pct, ts in trades:
+        meta    = placed_map.get(symbol, {})
+        details = meta.get("details", {})
+        score   = details.get("score", 0)
+
+        if score < MIN_SCORE_TO_TRADE:
+            continue
+
+        # Derive tier
+        from config import TIER_ELITE_MIN, TIER_HIGH_MIN
+        if score >= TIER_ELITE_MIN:
+            tier = "ELITE"
+        elif score >= TIER_HIGH_MIN:
+            tier = "HIGH"
+        else:
+            tier = "NORMAL"
+
+        # Hold time
+        hold_mins = 0
+        try:
+            entry_ts = datetime.fromisoformat(meta.get("ts") or ts)
+            exit_ts  = datetime.fromisoformat(ts)
+            hold_mins = round((exit_ts - entry_ts).total_seconds() / 60, 1)
+        except Exception:
+            pass
+
+        # VWAP distance at entry
+        vwap_dist = None
+        vwap  = details.get("vwap", 0)
+        if vwap and entry:
+            vwap_dist = round((entry - vwap) / vwap * 100, 3)
+
+        losers.append({
+            "symbol":            symbol,
+            "score":             score,
+            "tier":              tier,
+            "pnl":               round(pnl, 2),
+            "pnl_pct":           round(pnl_pct, 3),
+            "entry_time_et":     meta.get("ts", ts),
+            "hold_mins":         hold_mins,
+            "vwap_distance_pct": vwap_dist,
+            "orb_status":        details.get("orb_breakout", None),
+            "pullback_status":   details.get("pullback_quality", None),
+            "momentum_at_entry": details.get("momentum", None),
+            "news_impact":       details.get("top_news_impact", None),
+            "spread_at_entry":   details.get("spread_pct", None),
+            "exit_reason":       details.get("exit_reason", "unknown"),
+            "catalyst_quality":  details.get("setup_type", "unknown"),
+        })
+
+    losers.sort(key=lambda x: -x["score"])
+    return losers
+
+
+def print_high_score_loser_review(losers: list[dict]):
+    """Format and print the high-score loser review section."""
+    if not losers:
+        print(f"\n  High-Score Loser Review: no losing trades with score >= 78")
+        return
+
+    print(f"\n  High-Score Loser Review ({len(losers)} trade(s)):")
+    print(f"  {'Sym':<6} {'Score':>5} {'Tier':<7} {'PnL':>8} {'HoldM':>6} "
+          f"{'VwapD%':>7} {'Momentum':<14} {'Exit Reason'}")
+    print(f"  {'-'*90}")
+    for t in losers:
+        vd  = f"{t['vwap_distance_pct']:+.2f}%" if t["vwap_distance_pct"] is not None else "  n/a"
+        mom = (t["momentum_at_entry"] or "?")[:13]
+        ex  = (t["exit_reason"] or "?")[:30]
+        print(f"  {t['symbol']:<6} {t['score']:>5} {t['tier']:<7} "
+              f"${t['pnl']:>+7.2f} {t['hold_mins']:>5.0f}m "
+              f"{vd:>7} {mom:<14} {ex}")
+
+    # Pattern summary
+    if len(losers) >= 2:
+        print(f"\n  Common patterns among high-score losers:")
+
+        # Group by exit reason
+        by_exit: dict[str, list[dict]] = {}
+        for t in losers:
+            key = t.get("exit_reason") or "unknown"
+            by_exit.setdefault(key, []).append(t)
+
+        # Group by momentum at entry
+        by_mom: dict[str, list[dict]] = {}
+        for t in losers:
+            key = t.get("momentum_at_entry") or "unknown"
+            by_mom.setdefault(key, []).append(t)
+
+        n = len(losers)
+        for reason, group in sorted(by_exit.items(), key=lambda x: -len(x[1])):
+            cnt  = len(group)
+            pct  = cnt / n * 100
+            moms = [t.get("momentum_at_entry", "?") for t in group]
+            mom_counts = {m: moms.count(m) for m in set(moms)}
+            dominant_mom = max(mom_counts, key=mom_counts.get) if mom_counts else "?"
+
+            suggestion = ""
+            if reason == "rapid_invalidation" and dominant_mom in ("WEAKENING", "EXHAUSTED"):
+                suggestion = "consider raising MIN_MOMENTUM_TO_TRADE threshold"
+            elif reason == "time_exit" and cnt >= 2:
+                suggestion = "consider tightening TIME_EXIT_MINS or raising WATCHLIST_SCORE"
+            elif reason == "trailing_stop" and cnt >= 2:
+                suggestion = "review TRAILING_STOP_TRIGGER_PCT — setups may be entering too late"
+            elif "momentum" in reason.lower():
+                suggestion = "consider requiring momentum=STRENGTHENING for this tier"
+
+            if cnt > 1:
+                print(f"    {cnt}/{n} exited on '{reason}' with momentum={dominant_mom}"
+                      + (f"\n      -> {suggestion}" if suggestion else ""))
+
+        for mom, group in sorted(by_mom.items(), key=lambda x: -len(x[1])):
+            cnt = len(group)
+            if cnt >= 2 and mom in ("WEAKENING", "EXHAUSTED"):
+                print(f"    {cnt}/{n} entries had momentum={mom} — "
+                      f"consider blocking {mom} for HIGH/ELITE tiers")

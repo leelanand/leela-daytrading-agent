@@ -30,12 +30,19 @@ from config import (
     MIN_MOMENTUM_TO_TRADE,
     LOW_VOLUME_MIN_SCORE, LOW_VOLUME_MAX_TRADES,
     LOW_VOLUME_STOCK_RVOL, LOW_VOLUME_EXCEPTIONAL_SCORE, LOW_VOLUME_EXCEPTIONAL_NEWS,
+    CHAOS_LOCKOUT_END_ET,
+    TIER_HIGH_MIN, TIER_ELITE_MIN, ELITE_SIZE_BOOST, MAX_POSITION_SIZE_PCT,
+    TAKE_PROFIT_PCT,
 )
 from scanner import scan_for_candidates
 from analyst import analyse_candidates
 from executor import place_bracket_order, close_all_positions
-from risk import can_trade, check_candidate_risk, position_size, open_symbols
-from logger import init_db, log_audit, log_paper_trade, today_summary, all_time_summary
+from risk import (
+    can_trade, check_candidate_risk, position_size, open_symbols,
+    get_setup_tier, check_volatility_extension, atr_aware_stop_pct,
+    detect_failed_breakout,
+)
+from logger import init_db, log_audit, log_paper_trade, today_summary, all_time_summary, log_telemetry
 from candidates import save_candidates, load_valid_candidates
 from regime import detect_regime, is_tradeable, get_regime_context, LOW_VOLUME
 from sizing import dynamic_position_size
@@ -44,6 +51,9 @@ from momentum import analyse_momentum, STRENGTHENING, STABLE
 from intraday import get_intraday_alignment, is_aligned_for_longs
 from shared_lock import is_symbol_taken, claim_symbol, refresh_symbols
 from risk import suggested_stop_pct
+from orb import get_orb_status
+from pullback import check_pullback_entry
+from shortlist_monitor import add_to_shortlist, monitor_shortlist, clear_shortlist
 from performance import (
     generate_daily_performance, print_performance_report,
     should_pause_trading, get_recent_performance,
@@ -239,6 +249,16 @@ def _scan_and_trade(paper_mode: bool = False):
     if forced_paper:
         paper_mode = True
 
+    # Opening chaos lockout — no entries before 9:45 ET
+    now_et      = datetime.now(ET)
+    lockout_end = now_et.replace(
+        hour=CHAOS_LOCKOUT_END_ET[0], minute=CHAOS_LOCKOUT_END_ET[1], second=0, microsecond=0
+    )
+    if now_et < lockout_end:
+        print(f"   [LOCKOUT] Opening chaos lockout active until "
+              f"{CHAOS_LOCKOUT_END_ET[0]}:{CHAOS_LOCKOUT_END_ET[1]:02d} ET — no new entries")
+        return
+
     # Midday block
     if _in_midday_block():
         now = datetime.now(ET).strftime("%H:%M")
@@ -341,6 +361,26 @@ def _scan_and_trade(paper_mode: bool = False):
                 p["regime"] = regime
                 candidates.append(p)
 
+    # Add tradeable candidates to the shortlist before processing
+    try:
+        clear_shortlist()
+        for c in candidates:
+            add_to_shortlist(c)
+    except Exception:
+        pass
+
+    # Check shortlist for readiness signals (informational only in scan mode)
+    shortlist_ready: dict[str, dict] = {}
+    try:
+        ready_entries = monitor_shortlist()
+        for r in ready_entries:
+            shortlist_ready[r["symbol"]] = r
+        if shortlist_ready:
+            print(f"   [SHORTLIST] {len(shortlist_ready)} candidate(s) flagged ready: "
+                  f"{', '.join(shortlist_ready.keys())}")
+    except Exception:
+        pass
+
     trades_this_scan = 0
     for pick in candidates:
         ok, portfolio, reason = can_trade()
@@ -361,6 +401,13 @@ def _scan_and_trade(paper_mode: bool = False):
         vol_pct       = pick.get("volatility_pct", 0.0)
         spread_pct    = pick.get("spread_pct", 0.0)
         setup_type    = pick.get("setup_type", "unknown")
+
+        # Timestamps for telemetry
+        signal_ts   = pick.get("shortlisted_at") or pick.get("_prescan_ts")
+        decision_ts = datetime.now(ET).isoformat()
+
+        # Tier classification (spec point 5)
+        tier = get_setup_tier(score)
 
         # Cross-agent duplicate check — block if IBKR already holds this symbol
         taken, holder = is_symbol_taken(symbol)
@@ -421,16 +468,99 @@ def _scan_and_trade(paper_mode: bool = False):
             print(f"   [SKIP] {symbol}: momentum {mom['strength']} — not tradeable")
             continue
 
-        price  = pick["price"]
+        # Fetch 1-min bars (needed for ORB, pullback, ATR, failed-breakout checks)
+        from momentum import _get_1min_bars
+        bars_1min = []
+        try:
+            bars_1min = _get_1min_bars(symbol, 30)   # 30 bars covers ORB + ATR
+        except Exception:
+            pass
+
+        # ORB check (spec point 3) — informational quality signal, not a blocker
+        orb_status: dict = {}
+        try:
+            orb_status = get_orb_status(bars_1min)
+        except Exception:
+            orb_status = {"orb_breakout": False}
+        orb_breakout = orb_status.get("orb_breakout", False)
+        print(f"   ORB {symbol}: breakout={'YES' if orb_breakout else 'no'} "
+              f"[5m={orb_status.get('orb_5min', {}).get('is_orb_breakout', False)} "
+              f"15m={orb_status.get('orb_15min', {}).get('is_orb_breakout', False)}]")
+
+        # Volatility extension check (spec point 6) — ATR-aware, replaces fixed check when bars available
+        price = pick["price"]
+        vwap  = pick.get("vwap", 0.0)
+        vol_extended, vol_ext_reason = check_volatility_extension(price, vwap, bars_1min)
+        if vol_extended:
+            print(f"   [SKIP] {symbol}: {vol_ext_reason}")
+            log_audit("TRADE_REJECTED", symbol, {
+                "score": score, "reason": f"vol_extension: {vol_ext_reason}",
+                "setup_type": setup_type,
+            })
+            continue
+
+        # Failed breakout detection (spec point 8)
+        breakout_price = pick.get("open_price", price)
+        fb_failed, fb_reason = detect_failed_breakout(bars_1min, breakout_price)
+        if fb_failed:
+            print(f"   [SKIP] {symbol}: failed breakout — {fb_reason}")
+            log_audit("TRADE_REJECTED", symbol, {
+                "score": score, "reason": f"failed_breakout: {fb_reason}",
+                "setup_type": setup_type,
+            })
+            continue
+
+        # Pullback check (spec point 2) — only for HIGH and ELITE tiers
+        pullback_result: dict = {"pullback_quality": "N/A", "pullback_detected": False}
+        if tier in ("HIGH", "ELITE") and bars_1min:
+            try:
+                pullback_result = check_pullback_entry(pick, bars_1min)
+            except Exception:
+                pass
+
+            if pullback_result.get("reject"):
+                print(f"   [SKIP] {symbol}: pullback failed — {pullback_result['pullback_reason']}")
+                log_audit("TRADE_REJECTED", symbol, {
+                    "score": score, "reason": f"pullback_reject: {pullback_result['pullback_reason']}",
+                    "setup_type": setup_type, "tier": tier,
+                })
+                continue
+
+            if pullback_result.get("should_wait"):
+                print(f"   [WAIT] {symbol}: {tier} tier — waiting for pullback "
+                      f"({pullback_result['pullback_reason']})")
+                log_audit("TRADE_WAITING", symbol, {
+                    "score": score, "reason": pullback_result["pullback_reason"],
+                    "tier": tier,
+                })
+                continue
+
+            pq = pullback_result.get("pullback_quality", "NONE")
+            print(f"   Pullback {symbol}: {pq} — {pullback_result.get('pullback_reason', '')}")
+
+        # ATR-aware stop (spec point 7)
+        atr_stop = atr_aware_stop_pct(bars_1min, price)
+        stop_pct = atr_stop if bars_1min else suggested_stop_pct(mom["strength"], regime)
+        # Take profit = max(TAKE_PROFIT_PCT, 2x stop) to maintain R/R >= 1
+        tp_pct   = max(TAKE_PROFIT_PCT, 2.0 * stop_pct)
+
         shares, size_pct, size_note = dynamic_position_size(
             portfolio, price, score, vol_pct, spread_pct, regime, recent_wr
         )
-        stop_pct = suggested_stop_pct(mom["strength"], regime)
-        cost     = shares * price
+
+        # ELITE size boost (spec point 5) — only if spread tight and market aligned
+        if tier == "ELITE" and spread_pct < 0.15 and alignment in ("BULLISH", "STRONG_BULLISH", "ALIGNED"):
+            boosted_pct = min(MAX_POSITION_SIZE_PCT, size_pct * (1 + ELITE_SIZE_BOOST))
+            if boosted_pct > size_pct:
+                shares   = max(1, int(portfolio * boosted_pct / price))
+                size_pct = boosted_pct
+                size_note += f" | ELITE+{ELITE_SIZE_BOOST:.0%}"
+
+        cost = shares * price
 
         # Intraday quality gate — RVOL, VWAP distance, spread stability, exhaustion
-        now_et       = datetime.now(ET)
-        mins_elapsed = max(1, (now_et.hour * 60 + now_et.minute) - (9 * 60 + 30))
+        now_et_inner  = datetime.now(ET)
+        mins_elapsed  = max(1, (now_et_inner.hour * 60 + now_et_inner.minute) - (9 * 60 + 30))
         iq = get_intraday_quality(
             symbol, price, spread_pct,
             volume=pick.get("today_volume", 0),
@@ -492,17 +622,23 @@ def _scan_and_trade(paper_mode: bool = False):
             log_feed_event("VOLUME_DIVERGENCE", {"symbol": symbol, "detail": quote_reason})
 
         audit_details = {
-            "score":      score,
-            "shares":     shares,
-            "price":      price,
-            "cost":       round(cost, 2),
-            "size_pct":   round(size_pct, 3),
-            "sizing":     size_note,
-            "regime":     regime,
-            "alignment":  alignment,
-            "momentum":   mom["strength"],
-            "setup_type": setup_type,
-            "stop_pct":   round(stop_pct, 4),
+            "score":            score,
+            "tier":             tier,
+            "shares":           shares,
+            "price":            price,
+            "cost":             round(cost, 2),
+            "size_pct":         round(size_pct, 3),
+            "sizing":           size_note,
+            "regime":           regime,
+            "alignment":        alignment,
+            "momentum":         mom["strength"],
+            "setup_type":       setup_type,
+            "stop_pct":         round(stop_pct, 4),
+            "atr_stop_pct":     round(atr_stop, 5),
+            "orb_breakout":     orb_breakout,
+            "pullback_quality": pullback_result.get("pullback_quality", "N/A"),
+            "vwap":             vwap,
+            "spread_pct":       spread_pct,
         }
 
         # Log all feed inputs used for this decision
@@ -514,6 +650,7 @@ def _scan_and_trade(paper_mode: bool = False):
                 data_sources.append(iq["provider"])
         log_trade_feed_inputs(symbol, {
             "score":                 score,
+            "tier":                  tier,
             "regime":                regime,
             "alignment":             alignment,
             "momentum":              mom["strength"],
@@ -528,25 +665,60 @@ def _scan_and_trade(paper_mode: bool = False):
             "setup_type":            setup_type,
             "data_sources":          data_sources,
             "paper_mode":            paper_mode,
+            "orb_breakout":          orb_breakout,
+            "pullback_quality":      pullback_result.get("pullback_quality", "N/A"),
+            "atr_stop_pct":          round(atr_stop, 5),
         })
 
+        submit_ts = datetime.now(ET).isoformat()
+
         if paper_mode:
-            print(f"   [PAPER] WOULD BUY {symbol}  score={score}/100  {size_note}  "
-                  f"stop={stop_pct:.1%}  setup={setup_type}")
+            print(f"   [PAPER] WOULD BUY {symbol}  score={score}/100  tier={tier}  "
+                  f"{size_note}  stop={stop_pct:.1%}  setup={setup_type}  "
+                  f"orb={'Y' if orb_breakout else 'n'}  pullback={pullback_result.get('pullback_quality','N/A')}")
             print(f"   [PAPER] {shares}sh @ ${price:.2f} = ${cost:,.0f} | {reasoning}")
             log_paper_trade(symbol, shares, price, "BUY", score, reasoning)
             log_audit("PAPER_TRADE", symbol, audit_details)
         else:
-            print(f"   BUY {symbol}  score={score}/100  {size_note}  "
-                  f"stop={stop_pct:.1%}  setup={setup_type}")
+            print(f"   BUY {symbol}  score={score}/100  tier={tier}  {size_note}  "
+                  f"stop={stop_pct:.1%}  setup={setup_type}  "
+                  f"orb={'Y' if orb_breakout else 'n'}  pullback={pullback_result.get('pullback_quality','N/A')}")
             print(f"   {shares}sh @ ${price:.2f} = ${cost:,.0f} | {reasoning}")
-            place_bracket_order(
+            order = place_bracket_order(
                 symbol, shares, price,
-                score=score, size_pct=size_pct, sizing_note=size_note, stop_pct=stop_pct,
+                score=score, size_pct=size_pct, sizing_note=size_note,
+                stop_pct=stop_pct, take_profit_pct=tp_pct,
             )
             record_entry(symbol, price)
             claim_symbol(symbol)
             log_audit("ORDER_PLACED", symbol, audit_details)
+
+            # Execution telemetry (spec point 9)
+            fill_price = None
+            try:
+                fill_price = float(order.filled_avg_price) if hasattr(order, "filled_avg_price") and order.filled_avg_price else None
+            except Exception:
+                pass
+            slippage_pct = None
+            if fill_price and price > 0:
+                slippage_pct = round((fill_price - price) / price * 100, 5)
+            log_telemetry({
+                "symbol":                symbol,
+                "signal_ts":             signal_ts,
+                "decision_ts":           decision_ts,
+                "submit_ts":             submit_ts,
+                "signal_price":          prescan_price,
+                "decision_price":        price,
+                "submitted_limit_price": round(price * 1.001, 4),
+                "fill_price":            fill_price,
+                "slippage_pct":          slippage_pct,
+                "spread_at_decision":    spread_pct,
+                "score":                 score,
+                "tier":                  tier,
+                "orb_breakout":          orb_breakout,
+                "pullback_quality":      pullback_result.get("pullback_quality", "N/A"),
+                "atr_stop_pct":          round(atr_stop, 5),
+            })
 
         trades_this_scan += 1
 
@@ -626,6 +798,17 @@ if __name__ == "__main__":
     elif args.monitor:
         _header("MONITOR — advanced exits")
         monitor_positions()
+        # Shortlist readiness check — informational only, no orders placed in monitor mode
+        try:
+            ready = monitor_shortlist()
+            if ready:
+                print(f"\n   [SHORTLIST] {len(ready)} candidate(s) now ready for entry "
+                      f"(will execute in next --scan): "
+                      f"{', '.join(r['symbol'] for r in ready)}")
+            else:
+                print("   [SHORTLIST] No shortlisted candidates ready for entry.")
+        except Exception:
+            pass
 
     elif args.close:
         _header("FORCE CLOSE — 3:45pm ET")

@@ -18,3 +18,6 @@ intraday_cache.json
 paper_trades.json
 audit.log
 research_cache.json
+shortlist_state.json
+shortlist_monitor.log
+execution_telemetry.jsonl

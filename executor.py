@@ -20,10 +20,12 @@ def place_bracket_order(
     symbol: str, shares: int, price: float,
     score: int = 0, size_pct: float = 0.0, sizing_note: str = "",
     stop_pct: float | None = None,
+    take_profit_pct: float | None = None,
 ):
-    sp     = stop_pct if stop_pct is not None else STOP_LOSS_PCT
+    sp     = stop_pct        if stop_pct        is not None else STOP_LOSS_PCT
+    tp     = take_profit_pct if take_profit_pct is not None else TAKE_PROFIT_PCT
     stop   = round(price * (1 - sp), 2)
-    target = round(price * (1 + TAKE_PROFIT_PCT), 2)
+    target = round(price * (1 + tp), 2)
 
     if USE_LIMIT_ORDERS:
         limit_price = round(price * (1 + LIMIT_OFFSET_PCT), 2)

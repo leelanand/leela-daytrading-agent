@@ -139,6 +139,27 @@ def today_audit() -> list[dict]:
     return result
 
 
+def log_telemetry(event: dict):
+    """
+    Append one telemetry record to TELEMETRY_LOG_FILE.
+
+    Expected fields (all optional — log what's available):
+      symbol, signal_ts, shortlist_ts, decision_ts, submit_ts, fill_ts,
+      signal_price, decision_price, submitted_limit_price, fill_price,
+      slippage_pct, spread_at_decision, spread_at_fill,
+      score, tier, orb_breakout, pullback_quality, atr_stop_pct
+    """
+    from config import TELEMETRY_LOG_FILE
+    import json
+    from datetime import datetime, timezone
+    record = {"logged_at": datetime.now(timezone.utc).isoformat(), **event}
+    try:
+        with open(TELEMETRY_LOG_FILE, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        pass
+
+
 def today_summary() -> list[tuple]:
     con  = sqlite3.connect(DB_PATH)
     rows = con.execute(
