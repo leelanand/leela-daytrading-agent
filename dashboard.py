@@ -192,6 +192,66 @@ def _ibkr_log_tail() -> list[str]:
         return []
 
 
+def _agent_status() -> dict:
+    agents = {}
+    for name, d in [("alpaca", ALPACA_DIR), ("ibkr", IBKR_DIR)]:
+        s = {"running": False, "mode": "PAPER", "regime": "—", "regime_note": "",
+             "portfolio": "", "pnl": 0.0, "last_ts": ""}
+        log_path = d / "trading_day.log"
+        if log_path.exists():
+            age_s = (datetime.now() - datetime.fromtimestamp(log_path.stat().st_mtime)).total_seconds()
+            s["running"] = age_s < 300
+            lines = [l for l in log_path.read_text(encoding="utf-8", errors="replace").splitlines() if l.strip()]
+            # Last timestamped line
+            for l in reversed(lines):
+                if l.startswith("[20"):
+                    s["last_ts"] = l[1:17]
+                    break
+            # Mode badge
+            head = "\n".join(lines[:30])
+            s["mode"] = "LIVE" if "[LIVE]" in head else "PAPER"
+            # Portfolio balance
+            for l in reversed(lines):
+                if "Portfolio" in l and "$" in l:
+                    try:
+                        s["portfolio"] = l.split("$")[1].split()[0].replace(",", "")
+                    except Exception:
+                        pass
+                    break
+        # Regime
+        rc_path = d / "regime_cache.json"
+        if rc_path.exists():
+            try:
+                rc = json.loads(rc_path.read_text())
+                s["regime"]      = rc.get("regime", "—")
+                s["regime_note"] = rc.get("note", "")[:80]
+            except Exception:
+                pass
+        # P&L
+        pf_path = d / "performance.json"
+        if pf_path.exists():
+            try:
+                p = json.loads(pf_path.read_text())
+                if p.get("date") == date.today().isoformat():
+                    s["pnl"] = p.get("total_pnl", 0.0)
+            except Exception:
+                pass
+        agents[name] = s
+    return agents
+
+
+def _gappers_today() -> list[dict]:
+    try:
+        f = ALPACA_DIR / "gappers_today.json"
+        if f.exists():
+            data = json.loads(f.read_text())
+            if data.get("date") == date.today().isoformat():
+                return data.get("details", [])
+    except Exception:
+        pass
+    return []
+
+
 # ── Schedule status ───────────────────────────────────────────────────────────
 
 def _schedule_rows(audit: list[dict]) -> list[dict]:
@@ -368,6 +428,8 @@ def _build_status() -> dict:
         "research":   {"total": res_total, "claude_scored": res_scored},
         "recent_log": recent,
         "ibkr_log":   ibkr_log,
+        "agents":     _agent_status(),
+        "gappers":    _gappers_today(),
         "perf":       {k: perf.get(k) for k in
                        ("win_rate", "profit_factor", "expectancy", "trades")
                        if k in perf},
@@ -428,6 +490,20 @@ HTML = r"""<!DOCTYPE html>
   .metric-label { font-size: 10px; color: #8b949e; text-transform: uppercase; }
   .current-row td { background: #1c2128; }
   .full-width { grid-column: 1 / -1; }
+  .agent-card { display: flex; gap: 20px; flex-wrap: wrap; }
+  .agent-block { flex: 1; min-width: 260px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 10px 14px; }
+  .agent-name  { font-size: 13px; font-weight: bold; color: #e6edf3; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+  .badge-paper { background:#1f4068; color:#58a6ff; border-radius:4px; padding:1px 7px; font-size:10px; font-weight:bold; letter-spacing:.5px; }
+  .badge-live  { background:#3d1a1a; color:#f85149; border-radius:4px; padding:1px 7px; font-size:10px; font-weight:bold; letter-spacing:.5px; }
+  .badge-run   { background:#1a3d1a; color:#3fb950; border-radius:4px; padding:1px 7px; font-size:10px; }
+  .badge-stop  { background:#3d1a1a; color:#f85149; border-radius:4px; padding:1px 7px; font-size:10px; }
+  .agent-row   { display: flex; justify-content: space-between; padding: 3px 0; border-top: 1px solid #21262d; font-size: 12px; }
+  .agent-row:first-of-type { border-top: none; }
+  .agent-key   { color: #8b949e; }
+  .gapper-chip { display:inline-block; background:#1f2d1f; border:1px solid #2d4a2d; border-radius:12px; padding:2px 10px; margin:3px; font-size:11px; }
+  .gapper-sym  { color:#3fb950; font-weight:bold; }
+  .gapper-pct  { color:#8b949e; margin-left:4px; }
+  .gapper-vol  { color:#484f58; margin-left:4px; font-size:10px; }
 </style>
 </head>
 <body>
@@ -441,6 +517,11 @@ HTML = r"""<!DOCTYPE html>
     <div class="time-et" id="clock-et">--:-- ET</div>
     <div class="refresh-info">Last update: <span id="last-refresh">—</span></div>
   </div>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <h2>Agent Status</h2>
+  <div class="agent-card" id="agents-block"></div>
 </div>
 
 <div class="grid">
@@ -471,10 +552,22 @@ HTML = r"""<!DOCTYPE html>
     <div id="claude-stats"></div>
   </div>
 
+  <!-- Gappers -->
+  <div class="card">
+    <h2>Today's Gappers</h2>
+    <div id="gappers-block"><span style="color:#484f58">Scanning...</span></div>
+  </div>
+
   <!-- Recent log -->
   <div class="card full-width">
-    <h2>Recent Agent Activity</h2>
+    <h2>Alpaca — Recent Activity</h2>
     <div id="log-entries"></div>
+  </div>
+
+  <!-- IBKR log -->
+  <div class="card full-width">
+    <h2>IBKR — Recent Activity</h2>
+    <div id="ibkr-log-entries"></div>
   </div>
 
 </div>
@@ -603,6 +696,54 @@ function render(data) {
   });
   if (data.recent_log.length === 0) {
     logDiv.innerHTML = '<div style="color:#484f58">No activity yet today.</div>';
+  }
+
+  // Agent status
+  const agBlock = document.getElementById('agents-block');
+  agBlock.innerHTML = '';
+  const agNames = {alpaca: 'Alpaca (Daytrading)', ibkr: 'IBKR'};
+  for (const [key, ag] of Object.entries(data.agents || {})) {
+    const modeBadge = ag.mode === 'LIVE'
+      ? '<span class="badge-live">LIVE</span>'
+      : '<span class="badge-paper">PAPER</span>';
+    const runBadge = ag.running
+      ? '<span class="badge-run">&#9679; RUNNING</span>'
+      : '<span class="badge-stop">&#9679; STOPPED</span>';
+    const regimeColor = ag.regime === 'NO_TRADE' ? '#d29922' : ag.regime === 'TRENDING_UP' ? '#3fb950' : '#8b949e';
+    const pnlCls = pnlClass(ag.pnl || 0);
+    const pnlStr = (ag.pnl >= 0 ? '+' : '') + (ag.pnl || 0).toFixed(2);
+    const div = document.createElement('div');
+    div.className = 'agent-block';
+    div.innerHTML = `
+      <div class="agent-name">${agNames[key] || key} ${modeBadge} ${runBadge}</div>
+      <div class="agent-row"><span class="agent-key">Portfolio</span><span>${ag.portfolio ? '$'+ag.portfolio : '—'}</span></div>
+      <div class="agent-row"><span class="agent-key">Today P&amp;L</span><span class="${pnlCls}">$${pnlStr}</span></div>
+      <div class="agent-row"><span class="agent-key">Regime</span><span style="color:${regimeColor}">${ag.regime}</span></div>
+      <div class="agent-row"><span class="agent-key">Note</span><span style="color:#484f58;font-size:11px">${ag.regime_note || '—'}</span></div>
+      <div class="agent-row"><span class="agent-key">Last seen</span><span style="color:#484f58;font-size:11px">${ag.last_ts || '—'}</span></div>`;
+    agBlock.appendChild(div);
+  }
+
+  // Gappers
+  const gDiv = document.getElementById('gappers-block');
+  if (!data.gappers || data.gappers.length === 0) {
+    gDiv.innerHTML = '<span style="color:#484f58;font-size:12px">No gappers above threshold today.</span>';
+  } else {
+    gDiv.innerHTML = data.gappers.map(g =>
+      `<span class="gapper-chip"><span class="gapper-sym">${g.symbol}</span><span class="gapper-pct">${g.gap_pct > 0 ? '+' : ''}${g.gap_pct.toFixed(1)}%</span><span class="gapper-vol">${g.vol_ratio.toFixed(1)}x vol</span></span>`
+    ).join('');
+  }
+
+  // IBKR log
+  const ibkrDiv = document.getElementById('ibkr-log-entries');
+  if (!data.ibkr_log || data.ibkr_log.length === 0) {
+    ibkrDiv.innerHTML = '<div style="color:#484f58">IBKR agent not running.</div>';
+  } else {
+    ibkrDiv.innerHTML = data.ibkr_log.map(l => {
+      const ts  = l.match(/\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})/);
+      const body = l.replace(/\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\s*/, '');
+      return `<div class="log-entry"><span style="color:#484f58">${ts ? ts[1].substring(11) : ''}</span>  <span>${body.substring(0,160)}</span></div>`;
+    }).join('');
   }
 
   document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString();
