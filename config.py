@@ -246,6 +246,12 @@ ATR_MAX_STOP_PCT    = 0.025       # never wider than 2.5%
 # ── Execution Telemetry ───────────────────────────────────────────────────────
 TELEMETRY_LOG_FILE = Path(__file__).parent / "execution_telemetry.jsonl"
 
+# ── Claude Token Optimisation ─────────────────────────────────────────────────
+CLAUDE_MIN_LOCAL_SCORE        = 65    # skip Claude if local pre-score is below this
+ENABLE_CLAUDE_RESCORING       = True  # set False to run on local scores only (zero Claude cost)
+MAX_SYMBOLS_PER_CLAUDE_BATCH  = 12    # max candidates per Claude API call
+ANALYST_SCORE_CACHE_FILE      = Path(__file__).parent / "analyst_score_cache.json"
+
 # ── Watchlist ──────────────────────────────────────────────────────────────────
 WATCHLIST = [
     "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "META", "GOOGL", "AMZN", "NFLX", "AVGO",

@@ -160,8 +160,8 @@ def _synthesise(symbol_data: list[dict], macro: dict) -> list[dict]:
 
     resp = _claude.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=6000,
-        system=RESEARCH_SYSTEM,
+        max_tokens=16000,
+        system=[{"type": "text", "text": RESEARCH_SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": prompt}],
     )
     text = resp.content[0].text.strip()
