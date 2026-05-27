@@ -48,6 +48,9 @@ from config import (
     HIGH_VOL_MODERATE_ATR_PCT, HIGH_VOL_MODERATE_EXTRA_PTS, HIGH_VOL_MODERATE_SIZE_CUT,
     LIMIT_OFFSET_TIGHT_PCT, LIMIT_OFFSET_NORMAL_PCT, LIMIT_OFFSET_WIDE_PCT, MAX_LIMIT_SLIPPAGE_PCT,
     LIVE_PROMOTED_SETUPS, LIVE_REQUIRE_PROMOTED_SETUPS,
+    PAPER_LOW_VOLUME_MIN_SCORE, LIVE_LOW_VOLUME_MIN_SCORE,
+    EXTREME_HIGH_VOL_VIX, EXTREME_HIGH_VOL_ATR_PCT, EXTREME_HIGH_VOL_SPREAD_MULT,
+    MAX_TRADES_PER_DAY, AUDIT_LOG_FILE,
 )
 from scanner import scan_for_candidates
 from analyst import analyse_candidates
@@ -173,14 +176,70 @@ def _limit_offset(spread_pct: float) -> float:
         return LIMIT_OFFSET_WIDE_PCT
 
 
+def _is_extreme_high_vol() -> tuple[bool, str]:
+    """Returns (is_extreme, reason). Triggers when VIX + ATR both exceed extreme thresholds."""
+    try:
+        ctx     = get_regime_context()
+        vix     = float(ctx.get("vix", 0) or 0)
+        atr_pct = float(ctx.get("atr_pct", 0) or 0)
+        if vix >= EXTREME_HIGH_VOL_VIX and atr_pct >= EXTREME_HIGH_VOL_ATR_PCT:
+            return True, (f"extreme_high_vol: VIX={vix:.1f}>={EXTREME_HIGH_VOL_VIX}, "
+                          f"ATR={atr_pct:.1f}%>={EXTREME_HIGH_VOL_ATR_PCT}%")
+    except Exception:
+        pass
+    return False, ""
+
+
+def _paper_category_report():
+    """Read today's audit log and print paper trade category breakdown."""
+    import sqlite3, json as _json
+    from config import DB_PATH
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+    try:
+        con = sqlite3.connect(DB_PATH)
+        rows = con.execute(
+            "SELECT action, symbol, details FROM audit_log WHERE date=?", (today,)
+        ).fetchall()
+        con.close()
+        live_realistic, exploratory, hypothetical = [], [], []
+        claude_live = claude_exp = 0
+        for action, sym, det_str in rows:
+            if action == "PAPER_LIVE_REALISTIC":
+                live_realistic.append(sym)
+            elif action == "PAPER_EXPLORATORY_ONLY":
+                exploratory.append(sym)
+            elif action == "NO_TRADE_HYPOTHETICAL":
+                hypothetical.append(sym)
+            elif action == "PAPER_TRADE_TAGS":
+                try:
+                    d = _json.loads(det_str)
+                    if d.get("claude_involved"):
+                        if d.get("would_reject_live"):
+                            claude_exp += 1
+                        else:
+                            claude_live += 1
+                except Exception:
+                    pass
+        if live_realistic or exploratory or hypothetical:
+            print(f"\n  PAPER CLASSIFICATION (today):")
+            print(f"  Live-realistic    : {len(live_realistic)}  {live_realistic or '-'}")
+            print(f"  Exploratory-only  : {len(exploratory)}  {exploratory or '-'}")
+            print(f"  Hypothetical      : {len(hypothetical)}  {hypothetical or '-'}")
+            if claude_live or claude_exp:
+                print(f"  Claude live-ready : {claude_live}")
+                print(f"  Claude exploratory: {claude_exp}")
+    except Exception:
+        pass
+
+
 def _client() -> TradingClient:
     return TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=PAPER_TRADING)
 
 
 def _pre_submit_check(symbol: str, intended_price: float, intended_spread: float,
                       portfolio: float) -> tuple[bool, str]:
-    """Re-check 9 conditions immediately before order submission."""
-    # 1. Halt status (fast re-check)
+    """Re-check 12 conditions immediately before order submission."""
+    # 1. Halt status
     try:
         halted, halt_desc = check_halt(symbol)
         if halted:
@@ -188,33 +247,61 @@ def _pre_submit_check(symbol: str, intended_price: float, intended_spread: float
     except Exception:
         pass
 
-    # 2. Cross-agent lock re-check (may have changed in last few seconds)
+    # 2. Cross-agent lock re-check
     taken, holder = is_symbol_taken(symbol)
     if taken:
         return False, f"cross_agent_lock: claimed by {holder}"
 
-    # 3–5. Portfolio state (buying power, daily loss, position count)
+    # 3–5. Portfolio state (daily loss limit, max positions, kill switch)
     ok, _, reason = can_trade()
     if not ok:
         return False, f"portfolio: {reason}"
 
+    # 6. Market open
+    if not _market_open():
+        return False, "market_closed"
+
+    # 7. Earnings re-check
+    try:
+        earn_block, earn_desc = check_earnings(symbol)
+        if earn_block:
+            return False, f"earnings_recheck: {earn_desc}"
+    except Exception:
+        pass
+
+    # 8. Max trades today
+    try:
+        closed_today = len(today_summary())
+        if closed_today >= MAX_TRADES_PER_DAY:
+            return False, f"max_trades_today: {closed_today}/{MAX_TRADES_PER_DAY}"
+    except Exception:
+        pass
+
     try:
         client = _client()
 
-        # 6. Duplicate open order check
+        # 9. Duplicate open order check
         open_orders = client.get_orders()
         dupes = [o for o in open_orders if hasattr(o, "symbol") and o.symbol == symbol]
         if dupes:
             return False, f"duplicate_order: {len(dupes)} order(s) already open for {symbol}"
 
-        # 7. Spread / price freshness via account quote check
+        # 10. Buying power minimum
         acct = client.get_account()
         bp   = float(acct.buying_power or 0)
         min_cost = intended_price * max(1, int(portfolio * MIN_POSITION_SIZE_PCT / max(intended_price, 0.01)))
         if bp < min_cost:
             return False, f"buying_power: ${bp:.0f} < min_cost ${min_cost:.0f}"
 
-        # 8–9. Daily loss and max positions already covered by can_trade() above
+        # 11. Spread re-check (intended vs configured max)
+        from config import MAX_SPREAD_PCT
+        if intended_spread > MAX_SPREAD_PCT:
+            return False, f"spread_widened: {intended_spread:.2f}% > {MAX_SPREAD_PCT}%"
+
+        # 12. Price sanity (not aberrantly priced)
+        if intended_price <= 0 or intended_price > 50_000:
+            return False, f"price_invalid: ${intended_price:.2f}"
+
     except Exception:
         pass  # non-blocking — don't fail a good trade on check errors
 
@@ -314,26 +401,33 @@ def _prescan():
     log_audit("REGIME_DETECTED", details={"regime": regime, "reason": regime_reason})
 
     if not is_tradeable(regime):
-        print(f"   [NO TRADE] Regime {regime!r} not in tradeable set — prescan aborted.")
-        log_audit("PRESCAN_SKIPPED", details={"reason": f"regime={regime}"})
-        return
+        if PAPER_TRADING:
+            print(f"   [NO_TRADE_HYPOTHETICAL] Regime {regime!r} — prescan continuing in hypothetical mode")
+            log_audit("PRESCAN_HYPOTHETICAL", details={"reason": f"regime={regime}", "mode": "hypothetical"})
+        else:
+            print(f"   [NO TRADE] Regime {regime!r} not in tradeable set — prescan aborted.")
+            log_audit("PRESCAN_SKIPPED", details={"reason": f"regime={regime}"})
+            return
 
     low_vol_mode  = (regime == LOW_VOLUME)
     high_vol_mode = (regime == HIGH_VOL)
+    lv_min_score  = LIVE_LOW_VOLUME_MIN_SCORE if TRADING_MODE == "LIVE" else PAPER_LOW_VOLUME_MIN_SCORE
     if low_vol_mode:
         ctx = get_regime_context()
         print(f"   [LOW_VOLUME] REDUCED_RISK mode active — restrictions at scan time:")
-        print(f"     score >= {LOW_VOLUME_MIN_SCORE}  |  stock RVOL >= {LOW_VOLUME_STOCK_RVOL}x  "
+        print(f"     score >= {lv_min_score} ({'live' if TRADING_MODE == 'LIVE' else 'paper'})  "
+              f"|  stock RVOL >= {LOW_VOLUME_STOCK_RVOL}x  "
               f"|  max {LOW_VOLUME_MAX_TRADES} trade(s)  |  size -50%")
         print(f"     vix={ctx.get('vix','?')}  vol_10d={ctx.get('vol_ratio_10d','?')}  "
               f"vol_weekday={ctx.get('vol_ratio_weekday','?')}  "
               f"baseline={ctx.get('vol_baseline','?')}")
         log_audit("LOW_VOLUME_MODE", details={
             "restrictions": {
-                "min_score":   LOW_VOLUME_MIN_SCORE,
+                "min_score":   lv_min_score,
                 "min_rvol":    LOW_VOLUME_STOCK_RVOL,
                 "max_trades":  LOW_VOLUME_MAX_TRADES,
                 "size_cut":    "50%",
+                "mode":        TRADING_MODE,
             },
             **ctx,
         })
@@ -453,22 +547,30 @@ def _scan_and_trade(paper_mode: bool = False):
     # Regime check
     regime, regime_reason = detect_regime()
     print(f"   Regime  : {regime} — {regime_reason}")
+    no_trade_hypothetical = False
     if not is_tradeable(regime):
-        print(f"   [NO TRADE] Regime {regime!r} — scan aborted.")
-        log_audit("SCAN_SKIPPED", details={"reason": f"regime={regime}"})
-        return
+        if paper_mode or PAPER_TRADING:
+            print(f"   [NO_TRADE_HYPOTHETICAL] Regime {regime!r} — scanning in paper-hypothetical mode")
+            log_audit("SCAN_HYPOTHETICAL", details={"reason": f"regime={regime}", "mode": "hypothetical"})
+            no_trade_hypothetical = True
+        else:
+            print(f"   [NO TRADE] Regime {regime!r} — scan aborted.")
+            log_audit("SCAN_SKIPPED", details={"reason": f"regime={regime}"})
+            return
 
     low_vol_mode  = (regime == LOW_VOLUME)
     high_vol_mode = (regime == HIGH_VOL)
+    lv_min_score  = LIVE_LOW_VOLUME_MIN_SCORE if TRADING_MODE == "LIVE" else PAPER_LOW_VOLUME_MIN_SCORE
     if low_vol_mode:
         ctx = get_regime_context()
-        print(f"   [LOW_VOLUME] REDUCED_RISK: score>={LOW_VOLUME_MIN_SCORE}  "
+        print(f"   [LOW_VOLUME] REDUCED_RISK: score>={lv_min_score} ({'live' if TRADING_MODE == 'LIVE' else 'paper'})  "
               f"RVOL>={LOW_VOLUME_STOCK_RVOL}x  max {LOW_VOLUME_MAX_TRADES} trade  size-50%")
         log_audit("LOW_VOLUME_MODE", details={"restrictions": {
-            "min_score":  LOW_VOLUME_MIN_SCORE,
+            "min_score":  lv_min_score,
             "min_rvol":   LOW_VOLUME_STOCK_RVOL,
             "max_trades": LOW_VOLUME_MAX_TRADES,
             "size_cut":   "50%",
+            "mode":       TRADING_MODE,
         }, **ctx})
     elif high_vol_mode:
         ctx = get_regime_context()
@@ -488,6 +590,17 @@ def _scan_and_trade(paper_mode: bool = False):
             "moderate_extra_pts": HIGH_VOL_MODERATE_EXTRA_PTS,
             "allowed_setups":    HIGH_VOL_ALLOWED_SETUPS,
         }, **ctx})
+        # Extreme HIGH_VOL: no new trades (hard stop live, paper-hypothetical in paper)
+        extreme_hv, extreme_hv_reason = _is_extreme_high_vol()
+        if extreme_hv:
+            if paper_mode or PAPER_TRADING:
+                print(f"   [EXTREME_HIGH_VOL] {extreme_hv_reason} — paper-hypothetical scan only")
+                log_audit("EXTREME_HIGH_VOL_HYPOTHETICAL", details={"reason": extreme_hv_reason})
+                no_trade_hypothetical = True
+            else:
+                print(f"   [EXTREME_HIGH_VOL] {extreme_hv_reason} — no new trades.")
+                log_audit("EXTREME_HIGH_VOL_ABORT", details={"reason": extreme_hv_reason})
+                return
 
     # Intraday alignment check (real-time SPY direction)
     alignment, align_reason = get_intraday_alignment()
@@ -681,12 +794,13 @@ def _scan_and_trade(paper_mode: bool = False):
                     observed=score, threshold=hv_required, is_experimental=is_experimental)
             continue
 
-        # LOW_VOLUME confidence gate
-        if low_vol_mode and score < LOW_VOLUME_MIN_SCORE:
-            print(f"   [SKIP] {symbol}: LOW_VOLUME mode requires score>={LOW_VOLUME_MIN_SCORE} "
-                  f"(got {score})")
+        # LOW_VOLUME confidence gate (PAPER uses lower bar, LIVE uses higher)
+        effective_lv_min = LIVE_LOW_VOLUME_MIN_SCORE if TRADING_MODE == "LIVE" else PAPER_LOW_VOLUME_MIN_SCORE
+        if low_vol_mode and score < effective_lv_min:
+            print(f"   [SKIP] {symbol}: LOW_VOLUME requires score>={effective_lv_min} "
+                  f"({'live' if TRADING_MODE == 'LIVE' else 'paper'}) (got {score})")
             _reject(symbol, score, setup_type, "low_vol_gate", "low_volume_min_score",
-                    observed=score, threshold=LOW_VOLUME_MIN_SCORE,
+                    observed=score, threshold=effective_lv_min,
                     is_experimental=is_experimental)
             continue
 
@@ -798,7 +912,7 @@ def _scan_and_trade(paper_mode: bool = False):
         # ATR-aware stop (spec point 7)
         atr_stop = atr_aware_stop_pct(bars_1min, price)
         stop_pct = atr_stop if bars_1min else suggested_stop_pct(mom["strength"], regime)
-        # Take profit = max(TAKE_PROFIT_PCT, 2x stop) to maintain R/R >= 1
+        # Take profit = max(TAKE_PROFIT_PCT, 2x stop) — minimum 2:1 target-to-stop ratio
         tp_pct   = max(TAKE_PROFIT_PCT, 2.0 * stop_pct)
 
         # HIGH_VOL severity — moderate if stock ATR >= HIGH_VOL_MODERATE_ATR_PCT
@@ -1087,7 +1201,31 @@ def _scan_and_trade(paper_mode: bool = False):
                 "would_reject_live":       would_reject_live,
                 "would_reject_live_reason": would_reject_live_reason,
                 "high_vol_moderate":       high_vol_moderate,
+                "no_trade_hypothetical":   no_trade_hypothetical,
             })
+            # Paper trade outcome classification (Item 1)
+            if no_trade_hypothetical:
+                log_audit("NO_TRADE_HYPOTHETICAL", symbol, {
+                    "regime": regime, "score": score, "setup_type": setup_type,
+                    "would_reject_live": True,
+                })
+                log_audit("PAPER_EXPLORATORY_ONLY", symbol, {
+                    "reason": f"no_trade_regime:{regime}",
+                    "would_reject_live": True,
+                    "score": score, "setup_type": setup_type,
+                })
+            elif would_reject_live:
+                log_audit("PAPER_EXPLORATORY_ONLY", symbol, {
+                    "would_reject_live": True,
+                    "would_reject_live_reason": would_reject_live_reason,
+                    "score": score, "setup_type": setup_type, "regime": regime,
+                })
+            else:
+                log_audit("PAPER_LIVE_REALISTIC", symbol, {
+                    "score": score, "setup_type": setup_type, "regime": regime,
+                    "spread_pct": spread_pct, "tier": tier,
+                    "orb_breakout": orb_breakout,
+                })
         else:
             print(f"   BUY {symbol}  score={score}/100  tier={tier}  {size_note}  "
                   f"stop={stop_pct:.1%}  setup={setup_type}  "
@@ -1162,6 +1300,7 @@ def _report():
         print(f"\n  ALL TIME: {stats['trades']} trades | "
               f"${stats['total_pnl']:+.2f} | {stats['win_rate']:.0f}% WR")
 
+    _paper_category_report()
     print(f"{'='*62}\n")
 
 

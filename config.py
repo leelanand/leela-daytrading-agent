@@ -91,6 +91,15 @@ HIGH_VOL_MODERATE_ATR_PCT    = 2.5   # ATR >= this → moderate HIGH_VOL (tighte
 HIGH_VOL_MODERATE_EXTRA_PTS  = 3     # additional score pts on top of HIGH_VOL_MIN_SCORE_EXTRA
 HIGH_VOL_MODERATE_SIZE_CUT   = 0.40  # 40% size cut for moderate (vs 30% for mild)
 
+# ── PAPER vs LIVE LOW_VOLUME score thresholds ──────────────────────────────────
+PAPER_LOW_VOLUME_MIN_SCORE = 75   # paper: lower bar, scan more for learning
+LIVE_LOW_VOLUME_MIN_SCORE  = 82   # live: higher conviction required
+
+# ── Extreme HIGH_VOL hard stop ────────────────────────────────────────────────
+EXTREME_HIGH_VOL_VIX         = 35.0   # VIX >= this → extreme HIGH_VOL abort
+EXTREME_HIGH_VOL_ATR_PCT     = 4.0    # intraday ATR >= this % → extreme
+EXTREME_HIGH_VOL_SPREAD_MULT = 2.5    # avg spread > this × baseline → extreme
+
 # ── Preferred spread band ──────────────────────────────────────────────────────
 PREFERRED_SPREAD_PCT    = 0.18   # preferred max — above this is suboptimal but not blocked
 SPREAD_PENALTY_ABOVE    = 0.20   # size penalty applies when spread exceeds this
