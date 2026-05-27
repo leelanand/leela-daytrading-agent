@@ -1,5 +1,5 @@
 """
-Advanced exit monitoring — runs in --monitor mode every 15 min.
+Advanced exit monitoring — runs in --monitor mode every 2 min.
 
 Exit conditions checked (beyond the bracket's fixed stop/TP):
   1. Trailing stop  — activates after TRAILING_STOP_TRIGGER_PCT gain

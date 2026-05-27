@@ -26,7 +26,7 @@ SCHEDULE = [
     (1400, "Pre-market research",              "RESEARCH",     "pre"),
     (1433, "Prescan  — no orders placed",      "PRESCAN",      "pre"),
     (1448, "First scan — first trade possible","SCAN_1",       "trading"),
-    (1500, "Scan loop every 15 min",           "SCANNING",     "trading"),
+    (1500, "Scan loop every 5 min",            "SCANNING",     "trading"),
     (1700, "Midday block — no new entries",    "MIDDAY_START", "blocked"),
     (1800, "Afternoon session — trading resumes","MIDDAY_END", "trading"),
     (2030, "Stop new scans — last entry cutoff","SCAN_STOP",   "closing"),

@@ -64,7 +64,7 @@ Run-Agent @("--prescan")
 # ── Main trading loop ─────────────────────────────────────────────────────────
 $lastScan       = [DateTime]::MinValue
 $lastMonitor    = [DateTime]::MinValue
-$ScanIntervalM  = 15
+$ScanIntervalM  = 5
 $MonitorIntervalM = 2
 $forceClosed    = $false
 

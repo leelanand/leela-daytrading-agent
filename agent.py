@@ -7,7 +7,7 @@ Modes:
   --morning     alias for --prescan (backwards compat)
   --scan        10:00am+   — load prescan candidates, validate, execute
   --paper       simulate full --scan logic without placing real orders
-  --monitor     every 15 min — check trailing stops, time exits, momentum flips
+  --monitor     every 2 min — check trailing stops, time exits, momentum flips
   --close       3:45pm ET  — force-close all positions
   --report      4:00pm ET  — basic P&L from Alpaca
   --performance 4:15pm ET  — full analytics dashboard (expectancy, PF, windows)
@@ -762,7 +762,7 @@ if __name__ == "__main__":
     parser.add_argument("--morning",     action="store_true", help="Alias for --prescan")
     parser.add_argument("--scan",        action="store_true", help="Load prescan candidates and execute (10:00am+)")
     parser.add_argument("--paper",       action="store_true", help="Simulate scan/execute without real orders")
-    parser.add_argument("--monitor",     action="store_true", help="Check trailing stops and advanced exits (every 15 min)")
+    parser.add_argument("--monitor",     action="store_true", help="Check trailing stops and advanced exits (every 2 min)")
     parser.add_argument("--close",       action="store_true", help="Force-close all positions (3:45pm ET)")
     parser.add_argument("--report",      action="store_true", help="Basic P&L report (4:00pm ET)")
     parser.add_argument("--performance", action="store_true", help="Full analytics dashboard (4:15pm ET)")
