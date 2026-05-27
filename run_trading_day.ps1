@@ -45,6 +45,21 @@ function Now-BST-HHMM {
     return ($n.Hour * 100 + $n.Minute)
 }
 
+function Test-PrescanDone {
+    $today = (Get-Date).ToString("yyyy-MM-dd")
+    $found = Get-Content "$AgentDir\audit.log" -ErrorAction SilentlyContinue |
+             Where-Object { $_ -match $today -and $_ -match "PRESCAN_DONE" }
+    return ($null -ne $found -and @($found).Count -gt 0)
+}
+
+function Test-LastScanSkipped {
+    $today = (Get-Date).ToString("yyyy-MM-dd")
+    $lines = @(Get-Content "$AgentDir\audit.log" -ErrorAction SilentlyContinue |
+               Where-Object { $_ -match $today -and ($_ -match "SCAN_SKIPPED|SCAN_DONE|ORDER_PLACED|NO_ENTRY") })
+    if ($lines.Count -eq 0) { return $false }
+    return $lines[-1] -match "SCAN_SKIPPED"
+}
+
 Write-Log "=== Trading day started ==="
 
 # ── Pre-market research: 14:00 BST (9:00 ET) ─────────────────────────────────
@@ -60,13 +75,14 @@ while ((Now-BST-HHMM) -lt 1433) {
     Start-Sleep -Seconds 20
 }
 Run-Agent @("--prescan")
+$prescanDone = Test-PrescanDone
 
 # ── Main trading loop ─────────────────────────────────────────────────────────
-$lastScan       = [DateTime]::MinValue
-$lastMonitor    = [DateTime]::MinValue
-$ScanIntervalM  = 5
+$lastScan         = [DateTime]::MinValue
+$lastMonitor      = [DateTime]::MinValue
+$ScanIntervalM    = 5
 $MonitorIntervalM = 2
-$forceClosed    = $false
+$forceClosed      = $false
 
 Write-Log "Entering main loop (scan every ${ScanIntervalM}min, monitor every ${MonitorIntervalM}min)..."
 
@@ -84,10 +100,22 @@ while ($true) {
     # Stop entering new scans after 20:30 BST (15:30 ET) — let monitor handle final mins
     $scanAllowed = ($hhmm -lt 2030)
 
-    # Scan every 15 min
     if ($scanAllowed -and (($now - $lastScan).TotalMinutes -ge $ScanIntervalM)) {
+        # Fix 3: auto-prescan if prescan was previously skipped (regime was NO_TRADE)
+        if (-not $prescanDone) {
+            Write-Log "Prescan not yet done — running prescan before scan..."
+            Run-Agent @("--prescan")
+            $prescanDone = Test-PrescanDone
+        }
+
         Run-Agent @("--scan")
         $lastScan = $now
+
+        # Fix 4: if scan was skipped (regime still blocked), retry in 2 min instead of 5
+        if (Test-LastScanSkipped) {
+            Write-Log "Scan skipped — will retry in ~2 min"
+            $lastScan = $now.AddMinutes(-($ScanIntervalM - 2))
+        }
     }
 
     # Monitor every 2 min

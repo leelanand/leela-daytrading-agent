@@ -16,8 +16,10 @@ import json
 import numpy as np
 import yfinance as yf
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from config import (
-    REGIME_CACHE_MINS, SPY_TREND_DAYS, TRADEABLE_REGIMES, REGIME_CACHE_FILE,
+    REGIME_CACHE_MINS, EARLY_SESSION_GRACE_MINS,
+    SPY_TREND_DAYS, TRADEABLE_REGIMES, REGIME_CACHE_FILE,
     LOW_VOLUME_ABORT_RATIO,
 )
 
@@ -128,6 +130,13 @@ def detect_regime() -> tuple[str, str]:
         effective_vol_ratio = max(vol_ratio, wd_ratio) if wd_samples >= 2 else vol_ratio
         vol_baseline        = "weekday" if wd_samples >= 2 else "10day"
 
+        # Early session grace: skip volume-based NO_TRADE/LOW_VOLUME for first
+        # EARLY_SESSION_GRACE_MINS after open — cumulative vol is always low then
+        et_now = datetime.now(ZoneInfo("America/New_York"))
+        mkt_open = et_now.replace(hour=9, minute=30, second=0, microsecond=0)
+        mins_since_open = (et_now - mkt_open).total_seconds() / 60
+        in_early_session = 0 <= mins_since_open < EARLY_SESSION_GRACE_MINS
+
         # VIX context
         vix = _fetch_vix()
 
@@ -157,8 +166,9 @@ def detect_regime() -> tuple[str, str]:
             reason = (f"SPY ATR {atr_pct:.1f}% — elevated volatility "
                       f"(trade with reduced size)")
 
-        elif effective_vol_ratio < LOW_VOLUME_ABORT_RATIO:
+        elif effective_vol_ratio < LOW_VOLUME_ABORT_RATIO and not in_early_session:
             # Genuine liquidity collapse — abort all trading
+            # (skipped in first EARLY_SESSION_GRACE_MINS: cumulative vol always low at open)
             regime = NO_TRADE
             metrics["low_vol_abort"] = True
             factors = [f"SPY vol {effective_vol_ratio:.0%} of {vol_baseline} avg"]
@@ -167,7 +177,7 @@ def detect_regime() -> tuple[str, str]:
             reason = (f"Liquidity collapse: {', '.join(factors)} — "
                       f"below {LOW_VOLUME_ABORT_RATIO:.0%} abort threshold")
 
-        elif effective_vol_ratio < 0.60:
+        elif effective_vol_ratio < 0.60 and not in_early_session:
             # Thin but not collapsed — REDUCED_RISK mode
             regime = LOW_VOLUME
             metrics["low_vol_mode"] = True

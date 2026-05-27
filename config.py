@@ -58,7 +58,8 @@ RESEARCH_CACHE_HOURS  = 8
 DB_PATH = Path(__file__).parent / "daytrades.db"
 
 # ── Market Regime ──────────────────────────────────────────────────────────────
-REGIME_CACHE_MINS  = 30          # re-detect every 30 min
+REGIME_CACHE_MINS            = 15   # re-detect every 15 min
+EARLY_SESSION_GRACE_MINS     = 45   # skip vol-based NO_TRADE in first 45 min after open (9:30-10:15 ET)
 SPY_TREND_DAYS     = 3           # rolling days for SPY trend calculation
 TRADEABLE_REGIMES  = ["TRENDING_UP", "CHOPPY", "LOW_VOLUME"]
 # HIGH_VOL allowed but dynamic sizing cuts size; TRENDING_DOWN blocked
