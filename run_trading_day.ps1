@@ -29,10 +29,10 @@ function Write-Log {
 }
 
 function Run-Agent {
-    param([string[]]$Args)
-    $cmd = ($Args -join " ")
+    param([string[]]$AgentArgs)
+    $cmd = ($AgentArgs -join " ")
     Write-Log ">>> python agent.py $cmd"
-    & $Python "$AgentDir\agent.py" @Args 2>&1 | ForEach-Object {
+    & $Python "$AgentDir\agent.py" @AgentArgs 2>&1 | ForEach-Object {
         Write-Host $_
         Add-Content -Path $LogFile -Value $_
     }

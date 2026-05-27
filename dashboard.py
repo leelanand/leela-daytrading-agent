@@ -201,14 +201,25 @@ def _schedule_rows(audit: list[dict]) -> list[dict]:
     today     = date.today().isoformat()
 
     # Derive booleans
-    research_ok  = _research_done()
-    prescan_ok   = "PRESCAN_DONE"  in actions
-    force_ok     = "FORCE_CLOSE"   in actions
-    verified_ok  = "VERIFIED" in actions or "EOD_VERIFIED" in actions
-    perf_ok      = bool(_perf_today())
-    scan_count   = sum(1 for e in audit if e["action"] in ("SCAN_DONE", "SCAN_START"))
-    last_scan    = _last_scan_time(audit)
-    any_order    = "ORDER_PLACED" in actions
+    research_ok     = _research_done()
+    prescan_ok      = "PRESCAN_DONE"    in actions
+    prescan_skipped = "PRESCAN_SKIPPED" in actions
+    scan_skipped    = "SCAN_SKIPPED"    in actions
+    force_ok        = "FORCE_CLOSE"     in actions
+    verified_ok     = "VERIFIED" in actions or "EOD_VERIFIED" in actions
+    perf_ok         = bool(_perf_today())
+    scan_count      = sum(1 for e in audit if e["action"] in ("SCAN_DONE", "SCAN_START"))
+    last_scan       = _last_scan_time(audit)
+    any_order       = "ORDER_PLACED" in actions
+    regime_entry    = next((e for e in audit if e["action"] == "REGIME_DETECTED"), None)
+    regime_note     = ""
+    if regime_entry:
+        try:
+            raw = regime_entry["raw"]
+            d = json.loads(raw[raw.index("{"):])
+            regime_note = d.get("regime", "")
+        except Exception:
+            pass
 
     # candidates info
     t_count, w_count = _candidates_today()
@@ -227,6 +238,8 @@ def _schedule_rows(audit: list[dict]) -> list[dict]:
         elif key == "PRESCAN":
             if prescan_ok:
                 status, note = "done", f"{t_count}T {w_count}W"
+            elif prescan_skipped:
+                status, note = "skip", f"regime={regime_note}"
             elif past:
                 status, note = "warn", "expected by now"
             else:
@@ -235,6 +248,8 @@ def _schedule_rows(audit: list[dict]) -> list[dict]:
         elif key == "SCAN_1":
             if scan_count > 0:
                 status, note = "done", f"last {last_scan}"
+            elif scan_skipped:
+                status, note = "skip", f"regime={regime_note}"
             elif past:
                 status, note = "warn", "expected by now"
             else:
@@ -381,10 +396,12 @@ HTML = r"""<!DOCTYPE html>
   .done    { color: #3fb950; }
   .active  { color: #58a6ff; }
   .warn    { color: #d29922; }
+  .skip    { color: #a371f7; }
   .pending { color: #484f58; }
   .dot-done    { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #3fb950; margin-right: 6px; }
   .dot-active  { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #58a6ff; margin-right: 6px; animation: pulse 1.5s infinite; }
   .dot-warn    { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #d29922; margin-right: 6px; }
+  .dot-skip    { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #a371f7; margin-right: 6px; }
   .dot-pending { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #30363d; margin-right: 6px; }
   .win-trading { color: #3fb950; font-size: 10px; font-weight: bold; letter-spacing: .5px; }
   .win-blocked { color: #f85149; font-size: 10px; font-weight: bold; letter-spacing: .5px; }
@@ -484,7 +501,7 @@ function statusIcon(s) {
 }
 
 function statusText(s, note) {
-  const labels = {done:'Done', active:'Active', warn:'⚠ Late', pending:'Pending'};
+  const labels = {done:'Done', active:'Active', warn:'⚠ Late', skip:'⏭ Skipped', pending:'Pending'};
   return `<span class="${s}">${statusIcon(s)}${labels[s]||s}</span>${note ? ' <span style="color:#8b949e">'+note+'</span>' : ''}`;
 }
 
