@@ -141,15 +141,22 @@ def generate_daily_performance() -> dict:
         for w, v in window_pnl.items() if v
     }
 
-    # Rejection reasons
+    # Rejection reasons + top-scoring rejected candidates
     rejections: dict[str, int] = {}
+    top_rejected: list[dict] = []
     for action, sym, details_str, _ in audit:
         if action in ("TRADE_REJECTED", "TRADE_BLOCKED"):
             try:
-                reason = json.loads(details_str).get("reason", "unknown")
+                d      = json.loads(details_str)
+                reason = d.get("reason", "unknown")
+                score  = d.get("score", 0)
             except Exception:
-                reason = "unknown"
+                reason, score = "unknown", 0
             rejections[reason] = rejections.get(reason, 0) + 1
+            if sym and score > 0:
+                top_rejected.append({"symbol": sym, "score": score, "reason": reason})
+    top_rejected.sort(key=lambda x: -x["score"])
+    top_rejected = top_rejected[:5]
 
     # Slippage
     avg_slip = round(sum(slippages) / len(slippages), 4) if slippages else 0.0
@@ -174,6 +181,7 @@ def generate_daily_performance() -> dict:
         "max_drawdown":        round(max_dd, 2),
         "avg_slippage":        avg_slip,
         "rejections":          rejections,
+        "top_rejected":        top_rejected,
         "time_windows":        window_stats,
         f"rolling_{lb}d": {
             "trades":        rolling.get("trades", 0),
@@ -231,6 +239,11 @@ def print_performance_report(perf: dict):
         print(f"\n  Rejection Reasons:")
         for reason, cnt in sorted(perf["rejections"].items(), key=lambda x: -x[1]):
             print(f"    {reason[:52]:52s}  {cnt}×")
+
+    if perf.get("top_rejected"):
+        print(f"\n  Top Rejected Candidates (by score):")
+        for r in perf["top_rejected"]:
+            print(f"    {r['symbol']:6s}  score={r['score']:3d}  {r['reason'][:52]}")
 
     # Expectancy by dimension (only if data available)
     try:

@@ -15,6 +15,7 @@ from config import (
     TIME_EXIT_MINS, EXIT_STATE_FILE, RAPID_INVALIDATION_MINS,
 )
 from logger import log_audit
+from shared_lock import refresh_symbols, release_symbol
 
 
 def _client() -> TradingClient:
@@ -126,6 +127,7 @@ def execute_exits(symbols: list[str]):
         try:
             client.cancel_orders()
             client.close_position(symbol)
+            release_symbol(symbol)
             log_audit("EXIT_EXECUTED", symbol)
             print(f"   [CLOSED] {symbol}")
             state = _load_state()
@@ -139,6 +141,8 @@ def execute_exits(symbols: list[str]):
 
 def monitor_positions():
     """Entry point for --monitor mode."""
+    # Refresh shared lock so the other agent sees our current holdings accurately
+    refresh_symbols({p.symbol for p in _client().get_all_positions()})
     to_close = check_exits()
     if to_close:
         print(f"   Closing {len(to_close)} position(s): {', '.join(to_close)}")

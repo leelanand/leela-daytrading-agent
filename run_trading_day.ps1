@@ -57,7 +57,7 @@ Run-Agent @("--prescan")
 $lastScan       = [DateTime]::MinValue
 $lastMonitor    = [DateTime]::MinValue
 $ScanIntervalM  = 15
-$MonitorIntervalM = 5
+$MonitorIntervalM = 2
 $forceClosed    = $false
 
 Write-Log "Entering main loop (scan every ${ScanIntervalM}min, monitor every ${MonitorIntervalM}min)..."
@@ -82,7 +82,7 @@ while ($true) {
         $lastScan = $now
     }
 
-    # Monitor every 5 min
+    # Monitor every 2 min
     if (($now - $lastMonitor).TotalMinutes -ge $MonitorIntervalM) {
         Run-Agent @("--monitor")
         $lastMonitor = $now
@@ -90,6 +90,13 @@ while ($true) {
 
     Start-Sleep -Seconds 60
 }
+
+# ── 15:55 ET emergency flatness verification ─────────────────────────────────
+Write-Log "Waiting for 15:55 ET verify window (20:55 BST)..."
+while ((Now-BST-HHMM) -lt 2055) {
+    Start-Sleep -Seconds 15
+}
+Run-Agent @("--verify")
 
 # ── EOD reports ───────────────────────────────────────────────────────────────
 Write-Log "Market closed. Running EOD reports..."

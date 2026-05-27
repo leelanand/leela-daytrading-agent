@@ -41,6 +41,7 @@ from sizing import dynamic_position_size
 from exits import record_entry, monitor_positions
 from momentum import analyse_momentum, STRENGTHENING, STABLE
 from intraday import get_intraday_alignment, is_aligned_for_longs
+from shared_lock import is_symbol_taken, claim_symbol, refresh_symbols
 from risk import suggested_stop_pct
 from performance import (
     generate_daily_performance, print_performance_report,
@@ -313,7 +314,14 @@ def _scan_and_trade(paper_mode: bool = False):
         if not candidates:
             print("   No tradeable prescan candidates available.")
             return
-        print(f"   {len(candidates)} prescan candidate(s) | WR={recent_wr:.0%} | "
+        # Re-score with live data to drop any candidates that have faded since prescan
+        print(f"   Re-scoring {len(candidates)} prescan candidate(s) with live data...")
+        candidates = analyse_candidates(candidates)
+        candidates = [c for c in candidates if c.get("tradeable") and c["symbol"] not in held]
+        if not candidates:
+            print("   No candidates passed re-score threshold.")
+            return
+        print(f"   {len(candidates)} candidate(s) passed re-score | WR={recent_wr:.0%} | "
               f"window={current_win} | align={alignment}")
     else:
         print("   No valid prescan — running fresh scan...")
@@ -352,6 +360,16 @@ def _scan_and_trade(paper_mode: bool = False):
         vol_pct       = pick.get("volatility_pct", 0.0)
         spread_pct    = pick.get("spread_pct", 0.0)
         setup_type    = pick.get("setup_type", "unknown")
+
+        # Cross-agent duplicate check — block if IBKR already holds this symbol
+        taken, holder = is_symbol_taken(symbol)
+        if taken:
+            print(f"   [SKIP] {symbol}: already held by {holder} agent — duplicate exposure blocked")
+            log_audit("TRADE_REJECTED", symbol, {
+                "score": score, "reason": f"duplicate_exposure:{holder}",
+                "setup_type": setup_type,
+            })
+            continue
 
         # Event risk: hard-block on imminent earnings or halt
         earn_block, earn_desc = check_earnings(symbol)
@@ -526,6 +544,7 @@ def _scan_and_trade(paper_mode: bool = False):
                 score=score, size_pct=size_pct, sizing_note=size_note, stop_pct=stop_pct,
             )
             record_entry(symbol, price)
+            claim_symbol(symbol)
             log_audit("ORDER_PLACED", symbol, audit_details)
 
         trades_this_scan += 1
@@ -575,6 +594,7 @@ if __name__ == "__main__":
     parser.add_argument("--report",      action="store_true", help="Basic P&L report (4:00pm ET)")
     parser.add_argument("--performance", action="store_true", help="Full analytics dashboard (4:15pm ET)")
     parser.add_argument("--feedreport",  action="store_true", help="Feed quality report — provider health, mismatches, rejections")
+    parser.add_argument("--verify",      action="store_true", help="Emergency flatness check at 3:55pm ET — close anything still open")
     parser.add_argument("--status",      action="store_true", help="Current positions and P&L")
     args = parser.parse_args()
 
@@ -636,12 +656,46 @@ if __name__ == "__main__":
             print(f"  ✓ Fully flat — no overnight exposure")
         else:
             print(f"  ⚠ WARNING: still have open items — check immediately!")
+        refresh_symbols(set())
         log_audit("EOD_VERIFIED", details={
             "positions": len(remaining),
             "orders":    len(open_ords),
         })
         print()
         _status()
+
+    elif args.verify:
+        _header("EMERGENCY VERIFY — 3:55pm ET flatness check")
+        import time
+        client    = _client()
+        remaining = client.get_all_positions()
+        open_ords = client.get_orders()
+        if remaining or open_ords:
+            print(f"   [VERIFY] {len(remaining)} position(s), {len(open_ords)} order(s) still open — closing...")
+            if open_ords:
+                client.cancel_orders()
+                time.sleep(1)
+            for p in remaining:
+                try:
+                    client.close_position(p.symbol)
+                    print(f"   [CLOSED] {p.symbol}")
+                except Exception as e:
+                    print(f"   [ERROR] {p.symbol}: {e}")
+            time.sleep(3)
+            remaining = client.get_all_positions()
+            open_ords = client.get_orders()
+        print(f"\n  EOD_VERIFY_355:")
+        print(f"  Open positions : {len(remaining)}")
+        print(f"  Open orders    : {len(open_ords)}")
+        if not remaining and not open_ords:
+            print("  Fully flat — no overnight exposure")
+        else:
+            print("  WARNING: still have open items — check immediately!")
+        refresh_symbols(set())
+        log_audit("EOD_VERIFY_355", details={
+            "positions": len(remaining),
+            "orders":    len(open_ords),
+        })
 
     elif args.report:
         _header("DAILY REPORT")

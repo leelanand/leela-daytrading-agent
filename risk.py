@@ -8,6 +8,7 @@ from config import (
     MIN_VOLUME_DAILY, GAP_TOLERANCE_PCT, KILL_SWITCH,
     THEME_MAP, MAX_THEME_POSITIONS,
     STOP_LOSS_PCT, TIGHT_STOP_PCT, TIGHT_STOP_REGIMES,
+    MAX_MOVE_BEFORE_ENTRY_PCT,
 )
 from logger import today_audit
 
@@ -64,6 +65,14 @@ def check_candidate_risk(candidate: dict, portfolio_value: float, prescan_price:
         drift_pct = abs(price - prescan_price) / prescan_price * 100
         if drift_pct > GAP_TOLERANCE_PCT:
             return False, f"Price drifted {drift_pct:.1f}% from prescan (max {GAP_TOLERANCE_PCT}%)"
+
+    # From-open move check — catches extended intraday moves since prescan
+    open_price = candidate.get("open_price")
+    if open_price and open_price > 0:
+        move_from_open = (price - open_price) / open_price * 100
+        if move_from_open > MAX_MOVE_BEFORE_ENTRY_PCT:
+            return False, (f"Already moved {move_from_open:.1f}% from open at execution time "
+                           f"(max {MAX_MOVE_BEFORE_ENTRY_PCT}%)")
 
     # Sector exposure check
     sector = candidate.get("sector", "Unknown")

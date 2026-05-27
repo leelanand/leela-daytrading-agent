@@ -17,12 +17,14 @@ WEAKENING     = "WEAKENING"
 EXHAUSTED     = "EXHAUSTED"
 
 
-def _get_1min_bars(symbol: str, n: int) -> list:
-    client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
-    end    = datetime.now(timezone.utc)
-    start  = end - timedelta(minutes=n + 15)   # buffer for gaps / pre-market
+def _get_1min_bars(symbol: str, n: int) -> list[dict]:
+    """Returns OHLCV dicts for last n 1-min bars. Alpaca primary, yfinance fallback."""
+    # Primary: Alpaca historical data API
     try:
-        req  = StockBarsRequest(
+        client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+        end    = datetime.now(timezone.utc)
+        start  = end - timedelta(minutes=n + 15)
+        req    = StockBarsRequest(
             symbol_or_symbols=symbol,
             timeframe=TimeFrame.Minute,
             start=start,
@@ -30,7 +32,24 @@ def _get_1min_bars(symbol: str, n: int) -> list:
         )
         data = client.get_stock_bars(req)
         bars = list(data[symbol]) if symbol in data else []
-        return bars[-n:] if len(bars) >= n else bars
+        if len(bars) >= 5:
+            raw = bars[-n:] if len(bars) >= n else bars
+            return [{"open": float(b.open), "high": float(b.high),
+                     "low": float(b.low), "close": float(b.close),
+                     "volume": float(b.volume)} for b in raw]
+    except Exception:
+        pass
+
+    # Fallback: yfinance
+    try:
+        import yfinance as yf
+        df = yf.download(symbol, period="1d", interval="1m", progress=False, auto_adjust=True)
+        if df.empty or len(df) < 5:
+            return []
+        rows = [{"open": float(r["Open"]), "high": float(r["High"]),
+                 "low": float(r["Low"]), "close": float(r["Close"]),
+                 "volume": float(r["Volume"])} for _, r in df.iterrows()]
+        return rows[-n:] if len(rows) >= n else rows
     except Exception:
         return []
 
@@ -52,11 +71,11 @@ def analyse_momentum(symbol: str) -> dict:
                 "vol_accel": 1.0, "spike_detected": False,
                 "price_rising": False, "price_fading": False}
 
-    closes  = [float(b.close)  for b in bars]
-    volumes = [float(b.volume) for b in bars]
-    highs   = [float(b.high)   for b in bars]
-    lows    = [float(b.low)    for b in bars]
-    opens   = [float(b.open)   for b in bars]
+    closes  = [b["close"]  for b in bars]
+    volumes = [b["volume"] for b in bars]
+    highs   = [b["high"]   for b in bars]
+    lows    = [b["low"]    for b in bars]
+    opens   = [b["open"]   for b in bars]
     n       = len(bars)
     half    = n // 2
 

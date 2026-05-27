@@ -53,12 +53,14 @@ def get_intraday_alignment() -> tuple[str, str]:
     if cached:
         return cached["alignment"], f"[cached] {cached['reason']}"
 
+    spy_closes, spy_vols, qqq_closes = [], [], []
+
+    # Primary: Alpaca historical data API
     try:
         client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
         end    = datetime.now(timezone.utc)
-        start  = end - timedelta(minutes=35)     # 35-min window, need 20 real bars
-
-        req  = StockBarsRequest(
+        start  = end - timedelta(minutes=35)
+        req    = StockBarsRequest(
             symbol_or_symbols=["SPY", "QQQ"],
             timeframe=TimeFrame.Minute,
             start=start,
@@ -67,16 +69,34 @@ def get_intraday_alignment() -> tuple[str, str]:
         data    = client.get_stock_bars(req)
         spy_raw = list(data["SPY"]) if "SPY" in data else []
         qqq_raw = list(data["QQQ"]) if "QQQ" in data else []
+        spy_raw = spy_raw[-20:] if len(spy_raw) >= 5 else spy_raw
+        qqq_raw = qqq_raw[-20:] if len(qqq_raw) >= 5 else qqq_raw
+        if len(spy_raw) >= 5:
+            spy_closes = [float(b.close)  for b in spy_raw]
+            spy_vols   = [float(b.volume) for b in spy_raw]
+            qqq_closes = [float(b.close)  for b in qqq_raw] if len(qqq_raw) >= 5 else spy_closes
+    except Exception:
+        pass
 
-        spy = spy_raw[-20:] if len(spy_raw) >= 5 else spy_raw
-        qqq = qqq_raw[-20:] if len(qqq_raw) >= 5 else qqq_raw
+    # Fallback: yfinance
+    if len(spy_closes) < 5:
+        try:
+            import yfinance as yf
+            spy_df = yf.download("SPY", period="1d", interval="1m", progress=False, auto_adjust=True)
+            qqq_df = yf.download("QQQ", period="1d", interval="1m", progress=False, auto_adjust=True)
+            if not spy_df.empty and len(spy_df) >= 5:
+                spy_closes = spy_df["Close"].dropna().tolist()[-20:]
+                spy_vols   = spy_df["Volume"].tolist()[-20:]
+                qqq_closes = qqq_df["Close"].dropna().tolist()[-20:] if not qqq_df.empty else spy_closes
+        except Exception:
+            pass
+
+    try:
+        spy = spy_closes
+        qqq = qqq_closes
 
         if not spy or len(spy) < 5:
             return INTRADAY_FLAT, "Insufficient SPY bars — defaulting to FLAT"
-
-        spy_closes = [float(b.close) for b in spy]
-        spy_vols   = [float(b.volume) for b in spy]
-        qqq_closes = [float(b.close) for b in qqq] if len(qqq) >= 5 else spy_closes
 
         # Net change over full window
         spy_chg     = (spy_closes[-1] - spy_closes[0]) / spy_closes[0] * 100
