@@ -197,6 +197,58 @@ def _score_band(score: int) -> str:
     return "experimental"
 
 
+def _validate_vwap_reclaim(bars: list[dict], vwap: float, spread_pct: float,
+                            min_hold_candles: int = 2,
+                            max_spread: float = 0.30) -> tuple[bool, str]:
+    """
+    Returns (valid, reason). A real VWAP reclaim requires:
+    - price crossed from below VWAP to above (actual reclaim, not staying above)
+    - holds above VWAP for at least min_hold_candles consecutive closes
+    - volume does not collapse on reclaim candles vs prior average
+    - spread remains acceptable
+    """
+    if not bars or vwap <= 0:
+        return False, "no bars or no vwap"
+    if spread_pct > max_spread:
+        return False, f"spread {spread_pct:.3f}% > {max_spread:.3f}% max"
+
+    recent = bars[-10:] if len(bars) >= 10 else bars
+    if len(recent) < min_hold_candles + 2:
+        return False, "insufficient bars for VWAP reclaim check"
+
+    closes  = [b["close"]  for b in recent]
+    volumes = [b["volume"] for b in recent]
+
+    # Count consecutive closes above VWAP from the most recent candle
+    hold_count = 0
+    for c in reversed(closes):
+        if c > vwap:
+            hold_count += 1
+        else:
+            break
+
+    if hold_count < min_hold_candles:
+        return False, f"only {hold_count} candle(s) above VWAP — need {min_hold_candles}+"
+
+    # Must have had at least one close at/below VWAP before the hold (actual cross)
+    prior_closes = closes[:-hold_count]
+    if not any(c <= vwap for c in prior_closes):
+        return False, "no prior cross — price was already above VWAP (not a reclaim)"
+
+    # Volume check: reclaim candles must not be below 50% of prior candles average
+    reclaim_vols = volumes[-hold_count:]
+    prior_vols   = volumes[:-hold_count]
+    if prior_vols:
+        avg_prior   = sum(prior_vols) / len(prior_vols)
+        avg_reclaim = sum(reclaim_vols) / len(reclaim_vols)
+        if avg_prior > 0 and avg_reclaim < avg_prior * 0.5:
+            return False, (f"volume collapsed on reclaim "
+                           f"({avg_reclaim:.0f} < 50% of {avg_prior:.0f} prior avg)")
+
+    return True, (f"VWAP reclaim: {hold_count} candles above VWAP, "
+                  f"volume holding ({sum(reclaim_vols):.0f} total)")
+
+
 def _limit_offset(spread_pct: float) -> float:
     """Adaptive limit offset: tighter spread needs less aggressive overpay."""
     if spread_pct < 0.10:
@@ -1522,24 +1574,49 @@ def _scan_and_trade(paper_mode: bool = False):
             print(f"   Pullback {symbol}: {pq} — {pullback_result.get('pullback_reason', '')}")
 
         # Confirmation gate — pattern confirmation required in CHOPPY and for risky setups
+        confirmation_type = "NONE"
         if not avoid_override_pending:
             pb_detected = pullback_result.get("pullback_detected", False)
 
             if regime == CHOPPY:
-                # CHOPPY: every trade needs one of four pattern confirmations
-                vwap_reclaim_confirmed = setup_type == "vwap_reclaim"
-                news_momentum_elite    = (
+                # Validate VWAP reclaim with real bars (cross + hold + volume)
+                vwap_reclaim_valid, vwap_reclaim_reason = _validate_vwap_reclaim(
+                    bars_1min, vwap, spread_pct) if setup_type == "vwap_reclaim" else (False, "not vwap_reclaim setup")
+                if setup_type == "vwap_reclaim":
+                    print(f"   VWAP reclaim {symbol}: "
+                          f"{'VALID' if vwap_reclaim_valid else 'INVALID'} — {vwap_reclaim_reason}")
+
+                # News momentum elite — all conditions required
+                news_momentum_elite = (
                     setup_type == "news_momentum"
+                    and pick.get("_top_news_impact", 0) >= 70
                     and pick.get("rel_volume", 0) >= 2.5
                     and spread_pct <= 0.15
+                    and mom["strength"] in ("STRENGTHENING", "STABLE")
+                    # fb_failed and exhaustion already eliminated by prior gates
                 )
-                choppy_ok = orb_breakout or vwap_reclaim_confirmed or pb_detected or news_momentum_elite
-                if not choppy_ok:
+
+                # Determine which confirmation passes (priority order)
+                if orb_breakout:
+                    choppy_ok, confirmation_type = True, "ORB"
+                elif vwap_reclaim_valid:
+                    choppy_ok, confirmation_type = True, "VWAP_RECLAIM"
+                elif pb_detected:
+                    choppy_ok, confirmation_type = True, "PULLBACK"
+                elif news_momentum_elite:
+                    choppy_ok, confirmation_type = True, "NEWS_ELITE"
+                else:
+                    choppy_ok = False
+
+                if choppy_ok:
+                    print(f"   [CHOPPY OK] {symbol}: confirmed via {confirmation_type}")
+                else:
                     print(f"   [SKIP] {symbol}: CHOPPY requires ORB/VWAP-reclaim/pullback/news-elite "
                           f"(score={score} setup={setup_type} "
-                          f"rvol={pick.get('rel_volume',0):.1f}x spread={spread_pct:.3f}%)")
+                          f"rvol={pick.get('rel_volume',0):.1f}x spread={spread_pct:.3f}% "
+                          f"mom={mom['strength']} news_impact={pick.get('_top_news_impact',0)})")
                     _reject(symbol, score, setup_type, "choppy_gate", "choppy_confirmation_required",
-                            observed=f"orb={orb_breakout},vwap_reclaim={vwap_reclaim_confirmed},"
+                            observed=f"orb={orb_breakout},vwap_reclaim={vwap_reclaim_valid},"
                                      f"pb={pb_detected},news_elite={news_momentum_elite}",
                             is_experimental=is_experimental)
                     continue
@@ -1554,6 +1631,11 @@ def _scan_and_trade(paper_mode: bool = False):
                             observed=f"orb={orb_breakout},pb={pb_detected}",
                             is_experimental=is_experimental)
                     continue
+                # Track confirmation type for non-CHOPPY trades
+                if orb_breakout:
+                    confirmation_type = "ORB"
+                elif pb_detected:
+                    confirmation_type = "PULLBACK"
 
         # ATR-aware stop (spec point 7)
         atr_stop = atr_aware_stop_pct(bars_1min, price)
@@ -1759,6 +1841,7 @@ def _scan_and_trade(paper_mode: bool = False):
             "stop_pct":               round(stop_pct, 4),
             "atr_stop_pct":           round(atr_stop, 5),
             "orb_breakout":           orb_breakout,
+            "confirmation_type":      confirmation_type,
             "pullback_quality":       pullback_result.get("pullback_quality", "N/A"),
             "vwap":                   vwap,
             "spread_pct":             spread_pct,
