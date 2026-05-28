@@ -294,8 +294,9 @@ def _read_env_mode(directory: Path) -> str:
 def _agent_status() -> dict:
     agents = {}
     for name, d in [("alpaca", ALPACA_DIR), ("ibkr", IBKR_DIR)]:
+        currency = "£" if name == "ibkr" else "$"
         s = {"running": False, "mode": _read_env_mode(d), "regime": "—", "regime_note": "",
-             "portfolio": "", "pnl": 0.0, "last_ts": ""}
+             "portfolio": "", "currency": currency, "pnl": 0.0, "last_ts": ""}
         log_path = d / "trading_day.log"
         if log_path.exists():
             age_s = (datetime.now() - datetime.fromtimestamp(log_path.stat().st_mtime)).total_seconds()
@@ -1024,7 +1025,7 @@ function render(data) {
     div.className = 'agent-block';
     div.innerHTML = `
       <div class="agent-name">${agNames[key] || key} ${modeBadge} ${runBadge}</div>
-      <div class="agent-row"><span class="agent-key">Portfolio</span><span>${ag.portfolio ? '$'+ag.portfolio : '—'}</span></div>
+      <div class="agent-row"><span class="agent-key">Portfolio</span><span>${ag.portfolio ? (ag.currency||'$')+ag.portfolio : '—'}</span></div>
       <div class="agent-row"><span class="agent-key">Today P&amp;L</span><span class="${pnlCls}">$${pnlStr}</span></div>
       <div class="agent-row"><span class="agent-key">Regime</span><span style="color:${regimeColor}">${ag.regime}</span></div>
       <div class="agent-row"><span class="agent-key">Note</span><span style="color:#484f58;font-size:11px">${ag.regime_note || '—'}</span></div>
