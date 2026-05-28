@@ -4,11 +4,12 @@ Returns enriched candidates with spread, volatility, sector, and bid/ask data.
 """
 import finnhub
 import yfinance as yf
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
+from ib_insync import Stock
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockSnapshotRequest
-from datetime import datetime
 from zoneinfo import ZoneInfo
+from ibkr_client import get_ib
 from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, FINNHUB_API_KEY, WATCHLIST,
     MIN_GAP_PCT, MIN_REL_VOLUME, MIN_VOLUME_DAILY, MAX_SPREAD_PCT,
@@ -44,12 +45,72 @@ def _is_afternoon_continuation(price: float, vwap: float, day_high: float,
     return False
 
 
+def _ibkr_snapshots(symbols: list[str]) -> dict:
+    """Fetch real-time Level 1 snapshots from IB Gateway — real NBBO bid/ask."""
+    ib = get_ib()
+    contracts = [Stock(s, "SMART", "USD") for s in symbols]
+    ib.qualifyContracts(*contracts)
+    tickers = ib.reqTickers(*contracts)
+    ib.sleep(1)
+    return {t.contract.symbol: t for t in tickers}
+
+
 def _snapshots(symbols: list) -> dict:
+    """Alpaca snapshot fallback — used when IB Gateway is unavailable."""
     client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
     try:
         return client.get_stock_snapshot(StockSnapshotRequest(symbol_or_symbols=symbols))
     except Exception:
         return {}
+
+
+def _normalize_ibkr(ticker, symbol: str) -> dict | None:
+    """Convert IBKR ticker to normalised market data dict."""
+    try:
+        price = float(ticker.last or ticker.close or 0)
+        if price <= 0:
+            return None
+        hist_yf = yf.Ticker(symbol).history(period="2d")
+        if len(hist_yf) < 2:
+            return None
+        prev_close = float(hist_yf["Close"].iloc[-2])
+        raw_vwap   = getattr(ticker, "vwap", None)
+        return {
+            "price":      price,
+            "prev_close": prev_close,
+            "today_vol":  int(ticker.volume or 0),
+            "bid":        float(ticker.bid or price * 0.999),
+            "ask":        float(ticker.ask or price * 1.001),
+            "day_high":   float(ticker.high or price),
+            "day_low":    float(ticker.low  or price),
+            "open_price": float(ticker.open or prev_close),
+            "vwap":       float(raw_vwap) if raw_vwap and float(raw_vwap) > 0 else 0.0,
+            "data_src":   "ibkr",
+        }
+    except Exception:
+        return None
+
+
+def _normalize_alpaca(snap, symbol: str) -> dict | None:
+    """Convert Alpaca snapshot to normalised market data dict."""
+    try:
+        price      = float(snap.latest_trade.price)
+        prev_close = float(snap.previous_daily_bar.close)
+        raw_vwap   = snap.daily_bar.vwap if (snap.daily_bar and hasattr(snap.daily_bar, "vwap")) else None
+        return {
+            "price":      price,
+            "prev_close": prev_close,
+            "today_vol":  int(snap.daily_bar.volume) if snap.daily_bar else 0,
+            "bid":        float(snap.latest_quote.bid_price) if snap.latest_quote else price * 0.999,
+            "ask":        float(snap.latest_quote.ask_price) if snap.latest_quote else price * 1.001,
+            "day_high":   float(snap.daily_bar.high)  if snap.daily_bar else price,
+            "day_low":    float(snap.daily_bar.low)   if snap.daily_bar else price,
+            "open_price": float(snap.daily_bar.open)  if snap.daily_bar else prev_close,
+            "vwap":       float(raw_vwap) if raw_vwap and float(raw_vwap) > 0 else 0.0,
+            "data_src":   "alpaca",
+        }
+    except Exception:
+        return None
 
 
 def _avg_volume(symbol: str, days: int = 10) -> tuple[float | None, int | None]:
@@ -120,41 +181,59 @@ def _classify_setup(gap_pct: float, rel_volume: float, has_news: bool, vol_trend
 def scan_for_candidates() -> list[dict]:
     """
     Return top momentum candidates sorted by gap * rel_volume.
-    Each dict: symbol, price, prev_close, gap_pct, rel_volume, today_volume,
-               bid, ask, spread_pct, volatility_pct, sector, news, has_news.
+    Primary data source: IBKR real-time NBBO via IB Gateway.
+    Fallback: Alpaca snapshots (used if IB Gateway unreachable).
     """
     gappers  = get_daily_gappers()
-    universe = list(dict.fromkeys(WATCHLIST + gappers))  # deduplicated
+    universe = list(dict.fromkeys(WATCHLIST + gappers))
     extra    = [s for s in gappers if s not in WATCHLIST]
-    print(f"   Scanning {len(universe)} symbols ({len(WATCHLIST)} watchlist"
-          + (f" + {len(extra)} gappers: {', '.join(extra)}" if extra else "") + ")...")
-    snaps      = _snapshots(universe)
+
+    # Primary: IBKR real-time; fallback: Alpaca snapshots
+    try:
+        raw_snaps = _ibkr_snapshots(universe)
+        normalize = lambda sym, s: _normalize_ibkr(s, sym)
+        src_label = "IBKR"
+    except Exception as _e:
+        print(f"   [SCAN] IBKR unavailable ({_e}) — falling back to Alpaca snapshots")
+        raw_snaps = _snapshots(universe)
+        normalize = lambda sym, s: _normalize_alpaca(s, sym)
+        src_label = "Alpaca"
+
+    print(f"   Scanning {len(universe)} symbols ({src_label})"
+          + (f" + {len(extra)} gappers: {', '.join(extra)}" if extra else "") + "...")
     candidates = []
 
     for symbol in universe:
-        snap = snaps.get(symbol)
-        if not snap:
+        raw = raw_snaps.get(symbol)
+        if not raw:
             continue
         try:
-            price      = float(snap.latest_trade.price)
-            prev_close = float(snap.previous_daily_bar.close)
-            today_vol  = int(snap.daily_bar.volume) if snap.daily_bar else 0
+            md = normalize(symbol, raw)
+            if not md:
+                continue
+
+            price      = md["price"]
+            prev_close = md["prev_close"]
+            today_vol  = md["today_vol"]
+            bid        = md["bid"]
+            ask        = md["ask"]
+            day_high   = md["day_high"]
+            day_low    = md["day_low"]
+            open_price = md["open_price"]
+            vwap       = md["vwap"]
 
             gap_pct = (price - prev_close) / prev_close * 100
             if gap_pct < MIN_GAP_PCT:
                 continue
 
-            # IEX volume is exchange-only (~2% of consolidated market tape).
-            # Fetch yfinance full-market volume so RVOL ratios are meaningful.
             avg_vol, yf_today_vol = _avg_volume(symbol)
             effective_vol = max(today_vol, yf_today_vol or 0)
 
             if effective_vol < MIN_VOLUME_DAILY:
                 continue
 
-            # Pace-adjusted RVOL: project current volume to end-of-day and compare to avg.
-            now_et      = datetime.now(ET)
-            market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+            now_et          = datetime.now(ET)
+            market_open     = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
             mins_elapsed    = max(1, (now_et - market_open).total_seconds() / 60)
             projected_vol   = effective_vol * (390 / mins_elapsed)
             vol_trend_ratio = projected_vol / avg_vol if avg_vol and avg_vol > 0 else 0
@@ -162,69 +241,45 @@ def scan_for_candidates() -> list[dict]:
             if vol_trend_ratio < _afternoon_min_rvol():
                 continue
 
-            # Bid/ask spread
-            bid = float(snap.latest_quote.bid_price) if snap.latest_quote else price * 0.999
-            ask = float(snap.latest_quote.ask_price) if snap.latest_quote else price * 1.001
             spread_pct = (ask - bid) / price * 100 if price > 0 else 99.0
-
-            # IEX quotes show unrealistically wide spreads for liquid stocks.
-            # Apply a price-level proxy whenever IEX spread would reject a liquid trade.
-            if spread_pct > MAX_SPREAD_PCT and effective_vol > 200_000:
-                if price >= 200:
-                    spread_pct = 0.03
-                elif price >= 50:
-                    spread_pct = 0.05
-                else:
-                    spread_pct = 0.10
-                bid = round(price * (1 - spread_pct / 200), 2)
-                ask = round(price * (1 + spread_pct / 200), 2)
-
             if spread_pct > MAX_SPREAD_PCT:
                 continue
 
-            # Intraday volatility (daily range) and open price
-            day_high    = float(snap.daily_bar.high)  if snap.daily_bar else price
-            day_low     = float(snap.daily_bar.low)   if snap.daily_bar else price
-            open_price  = float(snap.daily_bar.open)  if snap.daily_bar else prev_close
-            vwap        = float(snap.daily_bar.vwap)  if (snap.daily_bar and hasattr(snap.daily_bar, "vwap") and snap.daily_bar.vwap) else price
             volatility_pct = (day_high - day_low) / price * 100 if price > 0 else 0.0
-
-            # Chased-move check — skip if price ran too far from open
-            # Exception: afternoon continuation setups (VWAP reclaim, ORB, HOD) are supposed to have large moves
-            move_from_open   = (price - open_price) / open_price * 100 if open_price > 0 else 0.0
-            afternoon_cont   = _is_afternoon_continuation(price, vwap, day_high, open_price, rel_volume)
+            move_from_open = (price - open_price) / open_price * 100 if open_price > 0 else 0.0
+            afternoon_cont = _is_afternoon_continuation(price, vwap, day_high, open_price, rel_volume)
             if not afternoon_cont and move_from_open > MAX_MOVE_BEFORE_ENTRY_PCT:
                 continue
 
-            below_vwap = price < vwap if VWAP_PREFERENCE else False
-
+            below_vwap = price < vwap if (VWAP_PREFERENCE and vwap > 0) else False
             sector     = _sector(symbol)
             news       = _news(symbol)
             setup_type = _classify_setup(gap_pct, rel_volume, len(news) > 0, vol_trend_ratio,
                                          price, vwap, day_high, open_price)
 
             candidates.append({
-                "symbol":           symbol,
-                "price":            round(price, 2),
-                "prev_close":       round(prev_close, 2),
-                "open_price":       round(open_price, 2),
-                "gap_pct":          round(gap_pct, 2),
-                "move_from_open":   round(move_from_open, 2),
-                "rel_volume":       round(rel_volume, 2),
-                "today_volume":     effective_vol,
-                "vol_trend_ratio":  round(vol_trend_ratio, 2),
-                "bid":              round(bid, 2),
-                "ask":              round(ask, 2),
-                "spread_pct":       round(spread_pct, 3),
-                "volatility_pct":   round(volatility_pct, 2),
-                "vwap":             round(vwap, 2),
-                "below_vwap":       below_vwap,
-                "sector":           sector,
-                "news":             news,
-                "has_news":         len(news) > 0,
+                "symbol":             symbol,
+                "price":              round(price, 2),
+                "prev_close":         round(prev_close, 2),
+                "open_price":         round(open_price, 2),
+                "gap_pct":            round(gap_pct, 2),
+                "move_from_open":     round(move_from_open, 2),
+                "rel_volume":         round(rel_volume, 2),
+                "today_volume":       effective_vol,
+                "vol_trend_ratio":    round(vol_trend_ratio, 2),
+                "bid":                round(bid, 2),
+                "ask":                round(ask, 2),
+                "spread_pct":         round(spread_pct, 3),
+                "volatility_pct":     round(volatility_pct, 2),
+                "vwap":               round(vwap, 2),
+                "below_vwap":         below_vwap,
+                "sector":             sector,
+                "news":               news,
+                "has_news":           len(news) > 0,
                 "setup_type":         setup_type,
                 "is_afternoon_setup": afternoon_cont,
                 "_is_top_gapper":     symbol in gappers,
+                "_data_src":          md["data_src"],
             })
         except Exception:
             continue

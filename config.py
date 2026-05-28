@@ -12,6 +12,11 @@ POLYGON_API_KEY   = os.getenv("POLYGON_API_KEY", "")     # optional secondary fe
 BENZINGA_API_KEY  = os.getenv("BENZINGA_API_KEY", "")    # optional fast news feed
 PAPER_TRADING     = os.getenv("PAPER_TRADING", "true").lower() == "true"
 
+# ── IBKR Market Data Connection ───────────────────────────────────────────────
+IBKR_HOST      = os.getenv("IBKR_HOST",      "127.0.0.1")
+IBKR_PORT      = int(os.getenv("IBKR_PORT",      "4001"))
+IBKR_CLIENT_ID = int(os.getenv("IBKR_CLIENT_ID", "2"))
+
 ALPACA_BASE_URL = (
     "https://paper-api.alpaca.markets" if PAPER_TRADING
     else "https://api.alpaca.markets"
