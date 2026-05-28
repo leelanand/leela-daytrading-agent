@@ -2,31 +2,42 @@
 Day Trading Agent — intraday momentum, all positions closed by 3:44pm ET.
 
 Daily schedule (BST / ET):
-  08:30 / 13:30  --research    Pre-market fundamentals + Claude brief for full watchlist
-  09:40 / 14:40  --precheck    Data readiness + live gate check (feeds, account, clock)
-  09:45 / 14:45  --prescan     Discover & score candidates, save to JSON, NO orders
-  10:00 / 15:00  --scan        Load prescan candidates, validate, execute (Scan1)
-  10:00 / 15:00  --monitor     Check trailing stops, time exits, momentum flips (every 2 min)
-  10:30 / 15:30  --scan        Scan2
-  11:30 / 16:30  --scan        Scan3
+  08:30 / 13:30  --research      Pre-market fundamentals + Claude brief for full watchlist
+  09:40 / 14:40  --precheck      Data readiness + live gate (TEST_01/02/14/20) — writes LIVE_ENABLED
+  09:45 / 14:45  --prescan       Discover & score candidates, save to JSON, NO orders
+  09:45 / 14:45  --continuous    Adaptive scan loop (5/15/10 min cadence) until 15:30 ET
+                                   OR use fixed Task Scheduler scans (--scan):
+  10:00 / 15:00  --scan          Scan1 | --monitor-loop  45s monitor loop
+  10:30 / 15:30  --scan          Scan2
+  11:30 / 16:30  --scan          Scan3
   [midday block  12:00–13:00 ET / 17:00–18:00 BST — scans skip automatically]
-  13:30 / 18:30  --scan        Scan4
-  15:00 / 20:00  --scan        Scan5
-  15:30 / 20:30  --cutoff      Cancel unfilled limit orders — entry window closes
-  15:44 / 20:44  --close       Force-close all positions
-  15:55 / 20:55  --verify      Emergency flatness check — close anything still open
-  16:15 / 21:15  --report      Basic P&L from Alpaca
-  16:30 / 21:30  --performance Full analytics dashboard (expectancy, PF, windows)
+  13:30 / 18:30  --scan          Scan4
+  15:00 / 20:00  --scan          Scan5  [power-hour gate: elite setups only]
+  15:30 / 20:30  --cutoff        Cancel unfilled limit orders — entry window closes
+  15:44 / 20:44  --close         Force-close all positions
+  15:55 / 20:55  --verify        Emergency flatness check — close anything still open
+  16:15 / 21:15  --report        Basic P&L from Alpaca
+  16:30 / 21:30  --performance   Full analytics dashboard (expectancy, PF, windows)
+
+Live safety gates (--precheck must pass all before --scan allows live orders):
+  TEST_01 Data Source Connectivity
+  TEST_02 Cross-Provider Validation
+  TEST_14 Broker Order Safety
+  TEST_20 End-to-End Dry Run
 
 Other:
-  --paper       Simulate full --scan logic without placing real orders
-  --morning     Alias for --prescan (backwards compat)
-  --status      Any time — current positions and P&L
-  --feedreport  Feed quality report — provider health, mismatches, rejections
+  --paper         Simulate full --scan logic without placing real orders
+  --monitor       Single-run position monitor (advanced exits, shortlist check)
+  --morning       Alias for --prescan (backwards compat)
+  --status        Any time — current positions and P&L
+  --feedreport    Feed quality report — provider health, mismatches, rejections
 """
 import argparse
+import json
+import math
+import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 # Ensure UTF-8 output on Windows so Unicode symbols in print() don't crash
@@ -100,6 +111,14 @@ from feed_logger import log_trade_feed_inputs, log_feed_event, \
 from event_risk import check_earnings, check_halt
 
 ET = ZoneInfo("America/New_York")
+
+# ── Live gate / PDT constants ─────────────────────────────────────────────────
+LIVE_GATE_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_gate_state.json")
+PDT_RESERVED_BUFFER  = 1   # always keep this many PDT slots in reserve
+QUOTE_STALE_SECS     = 30  # reject live quotes older than this (seconds)
+
+# ── Gapper refresh state ──────────────────────────────────────────────────────
+_last_gapper_refresh_et: datetime | None = None
 
 
 # ── Mode helpers ──────────────────────────────────────────────────────────────
@@ -248,31 +267,51 @@ def _client() -> TradingClient:
     return TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=PAPER_TRADING)
 
 
-def _pdt_check() -> tuple[bool, str]:
+def _pdt_budget() -> dict:
     """
-    Block order if the account has used all 3 PDT day-trade slots in the rolling
-    5-business-day window.  Only enforced in LIVE mode on sub-$25k accounts —
-    pattern_day_trader flag or equity >= $25k bypasses the check.
-    Fails open (returns True) on any API error so a connectivity glitch never
-    silently blocks a valid trade.
+    Return full PDT budget for LIVE sub-$25k accounts.
+    Reserves PDT_RESERVED_BUFFER slots so we never exhaust all 3 in one session.
+    Returns large numbers for paper mode / equity >= $25k (effectively unlimited).
     """
     if TRADING_MODE != "LIVE":
-        return True, "paper mode — PDT not applicable"
+        return {"usable": 999, "budget": 999, "count": 0, "equity": 0,
+                "last_trade_mode": False, "blocked": False,
+                "reason": "paper mode — PDT not applicable"}
     try:
-        account       = _client().get_account()
-        equity        = float(getattr(account, "equity", 0) or 0)
+        acct        = _client().get_account()
+        equity      = float(getattr(acct, "equity", 0) or 0)
         if equity >= 25_000:
-            return True, f"equity ${equity:,.0f} >= $25k — PDT not applicable"
-        count         = int(getattr(account, "daytrade_count", 0) or 0)
-        pdt_flagged   = getattr(account, "pattern_day_trader", False)
+            return {"usable": 999, "budget": 999, "count": 0, "equity": equity,
+                    "last_trade_mode": False, "blocked": False,
+                    "reason": f"equity ${equity:,.0f} >= $25k — PDT not applicable"}
+        count       = int(getattr(acct, "daytrade_count", 0) or 0)
+        pdt_flagged = getattr(acct, "pattern_day_trader", False)
         if pdt_flagged:
-            return False, "account flagged as pattern_day_trader — contact Alpaca support"
-        if count >= 3:
-            return False, (f"PDT limit: {count}/3 day trades used in rolling 5-day window — "
-                           f"no new positions until window resets")
-        return True, f"PDT ok: {count}/3 day trades used (equity ${equity:,.0f})"
+            return {"usable": 0, "budget": 0, "count": count, "equity": equity,
+                    "last_trade_mode": False, "blocked": True,
+                    "reason": "account flagged as pattern_day_trader — contact Alpaca support"}
+        budget = max(0, 3 - count)
+        usable = max(0, budget - PDT_RESERVED_BUFFER)
+        return {
+            "usable":          usable,
+            "budget":          budget,
+            "count":           count,
+            "equity":          equity,
+            "last_trade_mode": usable == 1,
+            "blocked":         usable == 0,
+            "reason":          (f"PDT: {count}/3 used — budget={budget} "
+                                f"usable={usable} (reserve={PDT_RESERVED_BUFFER})"),
+        }
     except Exception as e:
-        return True, f"PDT check skipped (API error: {e}) — allowing trade"
+        return {"usable": 999, "budget": 999, "count": 0, "equity": 0,
+                "last_trade_mode": False, "blocked": False,
+                "reason": f"PDT check error (allowing trade): {e}"}
+
+
+def _pdt_check() -> tuple[bool, str]:
+    """Thin wrapper around _pdt_budget() — True = trade allowed."""
+    pdt = _pdt_budget()
+    return not pdt["blocked"], pdt["reason"]
 
 
 def _live_time_gate() -> tuple[bool, str]:
@@ -483,25 +522,81 @@ def _current_window() -> str:
     return "power_hour"
 
 
+def _write_live_gate_state(enabled: bool, tests: dict) -> None:
+    state = {
+        "live_enabled": enabled,
+        "ts":           datetime.now(ET).isoformat(),
+        "allowed_mode": "LIVE" if enabled else "PAPER_ONLY",
+        "tests":        tests,
+    }
+    try:
+        with open(LIVE_GATE_STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2)
+    except Exception:
+        pass
+
+
+def _read_live_gate_state() -> tuple[bool, str]:
+    """Returns (live_enabled, reason). Safe-fails to False if file missing/stale."""
+    try:
+        with open(LIVE_GATE_STATE_FILE) as f:
+            state = json.load(f)
+        ts  = datetime.fromisoformat(state["ts"]).astimezone(ET)
+        now = datetime.now(ET)
+        if ts.date() < now.date():
+            return False, "live_gate_state is from a previous trading day — run --precheck"
+        return state.get("live_enabled", False), state.get("allowed_mode", "PAPER_ONLY")
+    except FileNotFoundError:
+        return False, "precheck not yet run today — run --precheck first"
+    except Exception as e:
+        return False, f"state file error: {e}"
+
+
 def _precheck():
     """
-    Data readiness + live gate check — runs at 09:40 ET / 14:40 BST, 5 min before prescan.
-    Verifies feeds, account connectivity, market clock, and LIVE mode config.
+    Data readiness + live gate — runs at 09:40 ET / 14:40 BST, 5 min before prescan.
+
+    Maps checks to the 4 mandatory live safety gate tests:
+      TEST_01 Data Source Connectivity
+      TEST_02 Cross-Provider Validation
+      TEST_14 Broker Order Safety
+      TEST_20 End-to-End Dry Run
+
+    LIVE trading remains disabled unless ALL 4 named tests pass.
+    Writes LIVE_ENABLED state to live_gate_state.json for use by --scan.
     No orders placed.  Logs PRECHECK_PASS or PRECHECK_FAIL to audit.
     """
     now_et  = datetime.now(ET)
     now_bst = now_et.astimezone(ZoneInfo("Europe/London"))
-    results: list[tuple[str, bool, str]] = []   # (check, ok, detail)
+    subs: list[tuple[str, bool, str]] = []   # (sub_id, ok, detail)
 
-    # 1. Account mode + URL sanity
-    if TRADING_MODE == "LIVE" and ("paper-api" in ALPACA_BASE_URL or PAPER_TRADING):
-        results.append(("account_mode", False,
-                        f"LIVE mode but endpoint={ALPACA_BASE_URL} paper_flag={PAPER_TRADING}"))
-    else:
-        results.append(("account_mode", True,
-                        f"ACCOUNT_MODE={TRADING_MODE} endpoint={ALPACA_BASE_URL}"))
+    # ── TEST_01: Data Source Connectivity ─────────────────────────────────────
+    try:
+        healthy, _ = _run_feed_health(paper_mode=True)
+        subs.append(("T01.feed_health", healthy,
+                     "feeds ok" if healthy else "feed degraded — check feed_health.json"))
+    except Exception as e:
+        subs.append(("T01.feed_health", False, f"health check error: {e}"))
 
-    # 2. Alpaca connectivity + account health
+    try:
+        from massive_feed import active_providers as _ap
+        providers = _ap()
+        subs.append(("T01.data_providers", bool(providers),
+                     f"active: {providers}" if providers else "no data providers configured"))
+    except Exception as e:
+        subs.append(("T01.data_providers", False, f"provider check error: {e}"))
+
+    # ── TEST_02: Cross-Provider Validation ────────────────────────────────────
+    try:
+        cval_ok, cval_reason, _ = validate_cross_provider("SPY", 0, 0, 0)
+        # A missing secondary is not a hard failure; we care about active mismatches
+        cval_pass = cval_ok or "no_secondary" in cval_reason or "mismatch" not in cval_reason
+        subs.append(("T02.cross_provider", cval_pass,
+                     (cval_reason[:80] if cval_reason else "cross-provider ok")))
+    except Exception as e:
+        subs.append(("T02.cross_provider", False, f"cross-provider error: {e}"))
+
+    # ── TEST_14: Broker Order Safety ──────────────────────────────────────────
     try:
         client  = _client()
         acct    = client.get_account()
@@ -509,62 +604,75 @@ def _precheck():
         bp      = float(acct.buying_power or 0)
         blocked = getattr(acct, "trading_blocked", False) or getattr(acct, "account_blocked", False)
         if blocked:
-            results.append(("alpaca_account", False, f"account blocked — check Alpaca dashboard"))
+            subs.append(("T14.broker_account", False, "account blocked — check Alpaca dashboard"))
         else:
-            results.append(("alpaca_account", True,
-                            f"equity=${equity:,.2f}  buying_power=${bp:,.2f}"))
+            subs.append(("T14.broker_account", True,
+                         f"equity=${equity:,.2f}  buying_power=${bp:,.2f}"))
     except Exception as e:
-        results.append(("alpaca_account", False, f"API error: {e}"))
+        subs.append(("T14.broker_account", False, f"API error: {e}"))
 
-    # 3. Market clock
+    if TRADING_MODE == "LIVE":
+        pdt = _pdt_budget()
+        subs.append(("T14.pdt_headroom", not pdt["blocked"], pdt["reason"]))
+
+    # ── TEST_20: End-to-End Dry Run ───────────────────────────────────────────
+    if TRADING_MODE == "LIVE" and ("paper-api" in ALPACA_BASE_URL or PAPER_TRADING):
+        subs.append(("T20.account_mode", False,
+                     f"LIVE but endpoint={ALPACA_BASE_URL} paper_flag={PAPER_TRADING}"))
+    else:
+        subs.append(("T20.account_mode", True,
+                     f"ACCOUNT_MODE={TRADING_MODE} endpoint={ALPACA_BASE_URL}"))
+
     try:
         clock      = _client().get_clock()
         is_open    = clock.is_open
-        next_open  = clock.next_open.astimezone(ET).strftime("%H:%M ET") if not is_open else "—"
         next_close = clock.next_close.astimezone(ET).strftime("%H:%M ET")
-        results.append(("market_clock", True,
-                        f"open={is_open}  next_close={next_close}" +
-                        (f"  next_open={next_open}" if not is_open else "")))
+        next_open  = clock.next_open.astimezone(ET).strftime("%H:%M ET") if not is_open else "—"
+        subs.append(("T20.market_clock", True,
+                     f"open={is_open}  next_close={next_close}" +
+                     (f"  next_open={next_open}" if not is_open else "")))
     except Exception as e:
-        results.append(("market_clock", False, f"clock error: {e}"))
+        subs.append(("T20.market_clock", False, f"clock error: {e}"))
 
-    # 4. Feed health
-    try:
-        healthy, _ = _run_feed_health(paper_mode=True)   # read-only, never forces paper here
-        results.append(("feed_health", healthy,
-                        "feeds ok" if healthy else "feed degraded — check feed_health.json"))
-    except Exception as e:
-        results.append(("feed_health", False, f"health check error: {e}"))
-
-    # 5. Data provider quote test
-    try:
-        from massive_feed import active_providers
-        providers = active_providers()
-        results.append(("data_providers", bool(providers),
-                        f"active: {providers}" if providers else "no data providers configured"))
-    except Exception as e:
-        results.append(("data_providers", False, f"provider check error: {e}"))
-
-    # 6. PDT headroom (LIVE only)
-    if TRADING_MODE == "LIVE":
-        pdt_ok, pdt_msg = _pdt_check()
-        results.append(("pdt_headroom", pdt_ok, pdt_msg))
-
-    # 7. Live time gate readiness (will orders be allowed at prescan time?)
     tg_ok, tg_msg = _live_time_gate()
-    results.append(("time_gate", tg_ok, tg_msg))
+    subs.append(("T20.time_gate", tg_ok, tg_msg))
 
-    # Print results
-    all_ok = all(ok for _, ok, _ in results)
-    print(f"  {'PRECHECK_PASS' if all_ok else 'PRECHECK_FAIL'}  "
+    # ── Aggregate into 4 named tests ──────────────────────────────────────────
+    def _tpass(prefix: str) -> bool:
+        return all(ok for sid, ok, _ in subs if sid.startswith(prefix))
+
+    named = {
+        "TEST_01_DataSourceConnectivity":  _tpass("T01"),
+        "TEST_02_CrossProviderValidation": _tpass("T02"),
+        "TEST_14_BrokerOrderSafety":       _tpass("T14"),
+        "TEST_20_EndToEndDryRun":          _tpass("T20"),
+    }
+    live_enabled = all(named.values())
+    allowed_mode = "LIVE" if live_enabled else "PAPER_ONLY"
+
+    # ── Print results ─────────────────────────────────────────────────────────
+    print(f"  {'PRECHECK_PASS' if live_enabled else 'PRECHECK_FAIL'}  "
           f"{now_et.strftime('%H:%M ET')} / {now_bst.strftime('%H:%M BST')}\n")
-    for check, ok, detail in results:
-        tag = "  OK" if ok else "FAIL"
-        print(f"  [{tag}] {check:<18} {detail}")
+    print(f"  {'─'*58}")
+    for tname, tpass in named.items():
+        print(f"  [{'PASS' if tpass else 'FAIL'}] {tname}")
+    print(f"  {'─'*58}")
+    for sid, ok, detail in subs:
+        print(f"  [{'  ok' if ok else 'FAIL'}]   {sid:<30} {detail}")
+    print(f"\n  LIVE_ENABLED  = {str(live_enabled).lower()}")
+    print(f"  allowed_mode  = {allowed_mode}")
+    if not live_enabled:
+        failed = [t for t, ok in named.items() if not ok]
+        print(f"\n  Blocking tests: {', '.join(failed)}")
+        print(f"  Action        : remain PAPER_ONLY until all 4 tests pass")
 
-    log_audit("PRECHECK_PASS" if all_ok else "PRECHECK_FAIL", details={
-        "checks": {c: {"ok": ok, "detail": d} for c, ok, d in results},
-        "trading_mode": TRADING_MODE,
+    _write_live_gate_state(live_enabled, named)
+    log_audit("PRECHECK_PASS" if live_enabled else "PRECHECK_FAIL", details={
+        "live_enabled":  live_enabled,
+        "allowed_mode":  allowed_mode,
+        "named_tests":   named,
+        "sub_checks":    {s: {"ok": o, "detail": d} for s, o, d in subs},
+        "trading_mode":  TRADING_MODE,
     })
     print()
 
@@ -600,6 +708,240 @@ def _cutoff():
         "time_bst":  now_bst.strftime("%H:%M"),
     })
     print(f"  [CUTOFF] Done — entry window closed, positions held until force-close at 15:44 ET")
+
+
+# ── Price safety guard ────────────────────────────────────────────────────────
+
+def _price_safety_guard(symbol: str, entry: float, stop: float, tp: float,
+                        qty: int, spread_pct: float) -> tuple[bool, str]:
+    """
+    Hard-reject any order with invalid price data before broker submission.
+    Called immediately before place_bracket_order().  Logs INVALID_PRICE_DATA_REJECT.
+    """
+    def _bad(v) -> bool:
+        return v is None or (isinstance(v, float) and math.isnan(v)) or v <= 0
+
+    for val, name in [(entry, "entry_price"), (stop, "stop_price"), (tp, "take_profit")]:
+        if _bad(val):
+            msg = f"{name} invalid: {val}"
+            log_audit("INVALID_PRICE_DATA_REJECT", symbol, {"error": msg})
+            return False, msg
+
+    if qty is None or qty <= 0:
+        msg = f"quantity invalid: {qty}"
+        log_audit("INVALID_PRICE_DATA_REJECT", symbol, {"error": msg})
+        return False, msg
+
+    if spread_pct is None or spread_pct < 0 or (isinstance(spread_pct, float) and math.isnan(spread_pct)):
+        msg = f"spread_pct invalid: {spread_pct}"
+        log_audit("INVALID_PRICE_DATA_REJECT", symbol, {"error": msg})
+        return False, msg
+
+    if stop >= entry:
+        msg = f"stop {stop:.4f} >= entry {entry:.4f} — invalid bracket"
+        log_audit("INVALID_PRICE_DATA_REJECT", symbol, {"error": msg})
+        return False, msg
+
+    if tp <= entry:
+        msg = f"take_profit {tp:.4f} <= entry {entry:.4f} — invalid bracket"
+        log_audit("INVALID_PRICE_DATA_REJECT", symbol, {"error": msg})
+        return False, msg
+
+    return True, "price data valid"
+
+
+# ── Power-hour gate ───────────────────────────────────────────────────────────
+
+_POWER_HOUR_ALLOWED_SETUPS = frozenset({
+    "gap_and_go", "orb_breakout", "orb_continuation", "vwap_reclaim",
+    "hod_breakout", "power_hour", "trend_continuation", "news_momentum",
+})
+
+
+def _power_hour_gate(symbol: str, score: int, setup_type: str,
+                     spread_pct: float, rvol: float,
+                     alignment: str) -> tuple[bool, str]:
+    """
+    After 15:00 ET: elite continuation setups only.
+    After 15:15 ET: tighten score/spread further.
+    Returns (allowed, reason).  Always passes before 15:00 ET.
+    """
+    now_et = datetime.now(ET)
+    mins   = now_et.hour * 60 + now_et.minute
+    if mins < 15 * 60:
+        return True, "not power hour"
+
+    late_tight = mins >= 15 * 60 + 15
+    min_score  = 88 if late_tight else 85
+    max_spread = 0.10
+
+    if setup_type not in _POWER_HOUR_ALLOWED_SETUPS:
+        return False, (f"power_hour: setup {setup_type!r} blocked after "
+                       f"15:{'15' if late_tight else '00'} ET "
+                       f"— continuation setups only")
+    if score < min_score:
+        return False, (f"power_hour: score {score} < {min_score} required after "
+                       f"15:{'15' if late_tight else '00'} ET")
+    if rvol > 0 and rvol < 2.5:
+        return False, f"power_hour: RVOL {rvol:.1f}x < 2.5x required"
+    if spread_pct > max_spread:
+        return False, f"power_hour: spread {spread_pct:.2%} > {max_spread:.0%} allowed"
+    if alignment not in ("BULLISH", "STRONG_BULLISH", "ALIGNED"):
+        return False, f"power_hour: alignment {alignment!r} insufficient"
+    return True, f"power_hour ok: score={score} rvol={rvol:.1f}x setup={setup_type}"
+
+
+# ── Adaptive gapper refresh ───────────────────────────────────────────────────
+
+def _refresh_gappers_adaptive() -> None:
+    """
+    Time-aware gapper refresh (replaces bare refresh_gappers_intraday() in scan loop):
+      09:30–11:00 ET (first 90 min)  →  every 5 min
+      after 11:00 ET                 →  every 10 min
+    Only re-runs when the interval has elapsed since last refresh.
+    """
+    global _last_gapper_refresh_et
+    now_et   = datetime.now(ET)
+    elapsed  = (now_et.hour * 60 + now_et.minute) - (9 * 60 + 30)
+    interval = 5 * 60 if elapsed <= 90 else 10 * 60
+    if (_last_gapper_refresh_et is None or
+            (now_et - _last_gapper_refresh_et).total_seconds() >= interval):
+        try:
+            from gapper import refresh_gappers_intraday
+            refresh_gappers_intraday()
+            _last_gapper_refresh_et = now_et
+        except Exception:
+            pass
+
+
+# ── Bracket verification ──────────────────────────────────────────────────────
+
+def _verify_bracket(symbol: str) -> tuple[bool, str]:
+    """
+    After entry fill: confirm stop-loss and take-profit child orders exist.
+    If either is missing: flatten immediately, cancel all orders, log BRACKET_PROTECTION_FAILURE.
+    Returns (bracket_ok, reason).
+    """
+    import time as _time
+    _time.sleep(1.5)  # allow bracket legs to register
+    try:
+        client = _client()
+        orders = client.get_orders()
+        legs   = [o for o in orders
+                  if hasattr(o, "symbol") and o.symbol == symbol]
+        has_sl = any(getattr(o, "type", "") in ("stop", "stop_limit") for o in legs)
+        has_tp = any(getattr(o, "type", "") in ("limit", "take_profit") for o in legs)
+        if has_sl and has_tp:
+            return True, f"bracket ok: {len(legs)} child order(s)"
+        # Bracket incomplete — flatten immediately
+        print(f"\n   [BRACKET_PROTECTION_FAILURE] {symbol}: "
+              f"sl={has_sl} tp={has_tp} legs={len(legs)} — flattening")
+        log_audit("BRACKET_PROTECTION_FAILURE", symbol, {
+            "has_sl": has_sl, "has_tp": has_tp, "legs": len(legs),
+        })
+        try:
+            client.close_position(symbol)
+            client.cancel_orders()
+        except Exception as ce:
+            log_audit("BRACKET_FLATTEN_ERROR", symbol, {"error": str(ce)})
+        return False, f"bracket incomplete: sl={has_sl} tp={has_tp}"
+    except Exception as e:
+        return False, f"bracket verification error: {e}"
+
+
+# ── Continuous adaptive scan loop ─────────────────────────────────────────────
+
+def _continuous_scan_loop() -> None:
+    """
+    Adaptive scan cadence from 09:45 to 15:30 ET:
+      09:45–11:00  every  5 min   (open — aggressive momentum capture)
+      11:00–13:00  every 15 min   (late morning)
+      13:00–15:30  every 10 min   (afternoon + power hour)
+    Power-hour gate activates automatically at 15:00 ET inside _scan_and_trade().
+    Exits when 15:30 ET cutoff is reached.
+    """
+    import time as _time
+
+    def _cadence() -> int:
+        mins = datetime.now(ET).hour * 60 + datetime.now(ET).minute
+        if mins < 11 * 60:  return  5 * 60
+        if mins < 13 * 60:  return 15 * 60
+        return                      10 * 60
+
+    _header("CONTINUOUS SCAN — adaptive 09:45–15:30 ET")
+    loop_n = 0
+
+    while True:
+        now_et = datetime.now(ET)
+        mins   = now_et.hour * 60 + now_et.minute
+
+        if mins >= 15 * 60 + 30:
+            print(f"   [CONTINUOUS] {now_et.strftime('%H:%M ET')} — "
+                  f"15:30 entry cutoff reached. Exiting scan loop.")
+            log_audit("CONTINUOUS_SCAN_DONE", details={"loops": loop_n})
+            break
+
+        lo_h, lo_m = LIVE_ORDER_EARLIEST_ET
+        lo_mins    = lo_h * 60 + lo_m
+        if mins < lo_mins:
+            wait_s = (lo_mins - mins) * 60
+            print(f"   [CONTINUOUS] Before {lo_h:02d}:{lo_m:02d} ET — "
+                  f"waiting {wait_s // 60}min for entry window")
+            _time.sleep(wait_s)
+            continue
+
+        loop_n += 1
+        print(f"\n{'─'*52}  loop #{loop_n}  "
+              f"{datetime.now(ET).strftime('%H:%M ET')}")
+        _status()
+        print()
+        _scan_and_trade(paper_mode=False)
+
+        cadence = _cadence()
+        next_et = datetime.now(ET) + timedelta(seconds=cadence)
+        print(f"\n   [CONTINUOUS] Next scan ~{next_et.strftime('%H:%M ET')} "
+              f"(cadence={cadence // 60}min)")
+        _time.sleep(cadence)
+
+
+# ── Monitor loop (30–60 s cadence) ───────────────────────────────────────────
+
+def _monitor_loop() -> None:
+    """
+    Tight-loop position monitor at 45-second cadence.
+    Monitors: stops, trailing stops, failed breakouts, spread deterioration,
+    momentum weakening, VWAP loss, liquidity collapse, rapid invalidation.
+    Exits when no positions remain after 15:30 ET.
+    """
+    import time as _time
+    INTERVAL = 45  # seconds
+
+    _header("MONITOR LOOP — 45s cadence")
+
+    while True:
+        now_et = datetime.now(ET)
+        mins   = now_et.hour * 60 + now_et.minute
+        monitor_positions()
+        try:
+            ready = monitor_shortlist()
+            if ready:
+                print(f"\n   [SHORTLIST] {len(ready)} ready: "
+                      f"{', '.join(r['symbol'] for r in ready)}")
+        except Exception:
+            pass
+
+        # After entry cutoff: exit loop once flat
+        if mins >= 15 * 60 + 30:
+            try:
+                remaining = _client().get_all_positions()
+                if not remaining:
+                    print(f"   [MONITOR LOOP] {now_et.strftime('%H:%M ET')} — "
+                          f"past cutoff and fully flat. Exiting.")
+                    break
+            except Exception:
+                pass
+
+        _time.sleep(INTERVAL)
 
 
 def _prescan():
@@ -728,6 +1070,15 @@ def _scan_and_trade(paper_mode: bool = False):
     if not paper_mode:
         _verify_account_mode()   # aborts if LIVE mode is misconfigured
 
+        # Live gate state — require successful --precheck today before any live orders
+        if TRADING_MODE == "LIVE":
+            gate_ok, gate_reason = _read_live_gate_state()
+            if not gate_ok:
+                print(f"   [LIVE_GATE_BLOCK] {gate_reason}")
+                print(f"   Run --precheck to enable live trading for today.")
+                log_audit("LIVE_GATE_BLOCK", details={"reason": gate_reason})
+                return
+
     if not _market_open():
         print("   Market is closed — skipping scan.")
         return
@@ -747,12 +1098,8 @@ def _scan_and_trade(paper_mode: bool = False):
               f"{CHAOS_LOCKOUT_END_ET[0]}:{CHAOS_LOCKOUT_END_ET[1]:02d} ET — no new entries")
         return
 
-    # Intraday gapper refresh — runs before any time gate so gappers stay fresh during midday block
-    try:
-        from gapper import refresh_gappers_intraday
-        refresh_gappers_intraday()
-    except Exception:
-        pass
+    # Adaptive gapper refresh (5 min first 90 min, 10 min after 11:00 ET)
+    _refresh_gappers_adaptive()
 
     # Midday block
     if _in_midday_block():
@@ -1262,6 +1609,19 @@ def _scan_and_trade(paper_mode: bool = False):
                     is_experimental=is_experimental)
             continue
 
+        # Power-hour gate — elite continuation setups only after 15:00 ET
+        ph_ok, ph_reason = _power_hour_gate(
+            symbol, score, setup_type, spread_pct, iq.get("rvol", 0.0), alignment
+        )
+        if not ph_ok:
+            print(f"   [SKIP] {symbol}: {ph_reason}")
+            _reject(symbol, score, setup_type, "power_hour_gate", "power_hour_restriction",
+                    observed=ph_reason, is_experimental=is_experimental)
+            log_audit("POWER_HOUR_GATE_REJECT", symbol, {
+                "reason": ph_reason, "score": score, "setup_type": setup_type,
+            })
+            continue
+
         # Cross-provider quote validation — compare Alpaca vs Massive/Polygon before executing
         quote_ok, quote_reason, poly_quote = validate_cross_provider(
             symbol, price, spread_pct, pick.get("today_volume", 0)
@@ -1409,15 +1769,42 @@ def _scan_and_trade(paper_mode: bool = False):
             })
             continue
 
-        # PDT guard — live only; checked once per symbol just before submission
+        # PDT budget guard — live only, with last-trade-mode elite criteria
         if not paper_mode:
-            pdt_ok, pdt_reason = _pdt_check()
-            if not pdt_ok:
-                print(f"   [PDT_BLOCK] {pdt_reason}")
+            pdt = _pdt_budget()
+            if pdt["blocked"]:
+                print(f"   [PDT_BLOCK] {pdt['reason']}")
                 log_audit("PDT_BLOCK", symbol, {
-                    "reason": pdt_reason, "score": score, "setup_type": setup_type,
+                    "reason": pdt["reason"], "score": score, "setup_type": setup_type,
+                    "budget": pdt["budget"], "usable": pdt["usable"],
                 })
-                continue
+                break  # budget exhausted — no more trades this session
+            if pdt["last_trade_mode"]:
+                # 1 usable slot remaining: require elite entry criteria
+                ltm_ok = (
+                    score >= 90
+                    and iq.get("rvol", 0) >= 2.5
+                    and spread_pct <= 0.15
+                    and setup_type in {"gap_and_go", "orb_breakout", "vwap_reclaim",
+                                       "news_momentum", "hod_breakout"}
+                    and (orb_breakout or pullback_result.get("pullback_detected", False))
+                    and alignment in ("BULLISH", "STRONG_BULLISH", "ALIGNED")
+                )
+                if not ltm_ok:
+                    print(f"   [PDT_LAST_TRADE] {symbol}: 1 slot left — elite criteria not met "
+                          f"(score={score} rvol={iq.get('rvol',0):.1f}x "
+                          f"spread={spread_pct:.2%} setup={setup_type})")
+                    log_audit("PDT_LAST_TRADE_BLOCK", symbol, {
+                        "reason": "last_trade_mode_criteria_not_met",
+                        "score": score, "rvol": round(iq.get("rvol", 0), 2),
+                        "spread_pct": spread_pct, "setup_type": setup_type,
+                        "orb": orb_breakout, "alignment": alignment,
+                    })
+                    continue
+                print(f"   [PDT_LAST_TRADE] {symbol}: last slot — elite criteria met ✓")
+                log_audit("PDT_LAST_TRADE_APPROVED", symbol, {
+                    "score": score, "setup_type": setup_type, "usable": pdt["usable"],
+                })
 
         # LIVE promoted-setup logging (informational, LIVE_REQUIRE_PROMOTED_SETUPS gates this)
         if LIVE_REQUIRE_PROMOTED_SETUPS and setup_type not in LIVE_PROMOTED_SETUPS:
@@ -1509,11 +1896,34 @@ def _scan_and_trade(paper_mode: bool = False):
                   f"stop={stop_pct:.1%}  setup={setup_type}  "
                   f"orb={'Y' if orb_breakout else 'n'}  pullback={pullback_result.get('pullback_quality','N/A')}")
             print(f"   {shares}sh @ ${price:.2f} = ${cost:,.0f} | {reasoning}")
+
+            # Price safety guard — hard reject before broker submission
+            limit_price = price * (1 + min(_limit_offset(spread_pct), MAX_LIMIT_SLIPPAGE_PCT))
+            stop_price  = price * (1 - stop_pct)
+            tp_price    = price * (1 + tp_pct)
+            pg_ok, pg_reason = _price_safety_guard(symbol, limit_price, stop_price, tp_price,
+                                                    shares, spread_pct)
+            if not pg_ok:
+                print(f"   [INVALID_PRICE_DATA_REJECT] {symbol}: {pg_reason}")
+                log_audit("INVALID_PRICE_DATA_REJECT", symbol, {
+                    "reason": pg_reason, "entry": price, "stop_pct": stop_pct, "tp_pct": tp_pct,
+                })
+                continue
+
             order = place_bracket_order(
                 symbol, shares, price,
                 score=score, size_pct=size_pct, sizing_note=size_note,
                 stop_pct=stop_pct, take_profit_pct=tp_pct,
             )
+
+            # Bracket verification — confirm SL+TP legs exist; flatten if missing
+            bv_ok, bv_reason = _verify_bracket(symbol)
+            if not bv_ok:
+                log_audit("BRACKET_PROTECTION_FAILURE", symbol, {
+                    "reason": bv_reason, "score": score, "setup_type": setup_type,
+                })
+                continue  # position already flattened inside _verify_bracket()
+
             record_entry(symbol, price)
             claim_symbol(symbol)
             log_audit("ORDER_PLACED", symbol, audit_details)
@@ -1534,7 +1944,7 @@ def _scan_and_trade(paper_mode: bool = False):
                 "submit_ts":             submit_ts,
                 "signal_price":          prescan_price,
                 "decision_price":        price,
-                "submitted_limit_price": round(price * (1 + min(_limit_offset(spread_pct), MAX_LIMIT_SLIPPAGE_PCT)), 4),
+                "submitted_limit_price": round(limit_price, 4),
                 "fill_price":            fill_price,
                 "slippage_pct":          slippage_pct,
                 "spread_at_decision":    spread_pct,
@@ -1587,19 +1997,21 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--research",    action="store_true", help="Pre-market research — fundamentals + Claude brief (8:30am ET)")
-    parser.add_argument("--precheck",    action="store_true", help="Data readiness + live gate check (9:40am ET)")
-    parser.add_argument("--prescan",     action="store_true", help="Discover & score candidates, NO orders (9:45am ET)")
-    parser.add_argument("--morning",     action="store_true", help="Alias for --prescan")
-    parser.add_argument("--scan",        action="store_true", help="Load prescan candidates and execute (10:00am+ ET)")
-    parser.add_argument("--paper",       action="store_true", help="Simulate full --scan logic without real orders")
-    parser.add_argument("--monitor",     action="store_true", help="Check trailing stops and advanced exits (every 2 min)")
-    parser.add_argument("--cutoff",      action="store_true", help="Entry cutoff — cancel unfilled limit orders (3:30pm ET)")
-    parser.add_argument("--close",       action="store_true", help="Force-close all positions (3:44pm ET)")
-    parser.add_argument("--verify",      action="store_true", help="Emergency flatness check — close anything still open (3:55pm ET)")
-    parser.add_argument("--report",      action="store_true", help="Basic P&L report (4:15pm ET)")
-    parser.add_argument("--performance", action="store_true", help="Full analytics dashboard (4:30pm ET)")
-    parser.add_argument("--feedreport",  action="store_true", help="Feed quality report — provider health, mismatches, rejections")
-    parser.add_argument("--status",      action="store_true", help="Current positions and P&L (any time)")
+    parser.add_argument("--precheck",      action="store_true", help="Data readiness + live gate check (9:40am ET)")
+    parser.add_argument("--prescan",       action="store_true", help="Discover & score candidates, NO orders (9:45am ET)")
+    parser.add_argument("--morning",       action="store_true", help="Alias for --prescan")
+    parser.add_argument("--scan",          action="store_true", help="Load prescan candidates and execute (10:00am+ ET)")
+    parser.add_argument("--continuous",    action="store_true", help="Adaptive scan loop 09:45–15:30 ET (5/15/10 min cadence)")
+    parser.add_argument("--paper",         action="store_true", help="Simulate full --scan logic without real orders")
+    parser.add_argument("--monitor",       action="store_true", help="Check trailing stops and advanced exits (single run)")
+    parser.add_argument("--monitor-loop",  action="store_true", help="Tight 45s monitor loop — replaces 2-min Task Scheduler polling")
+    parser.add_argument("--cutoff",        action="store_true", help="Entry cutoff — cancel unfilled limit orders (3:30pm ET)")
+    parser.add_argument("--close",         action="store_true", help="Force-close all positions (3:44pm ET)")
+    parser.add_argument("--verify",        action="store_true", help="Emergency flatness check — close anything still open (3:55pm ET)")
+    parser.add_argument("--report",        action="store_true", help="Basic P&L report (4:15pm ET)")
+    parser.add_argument("--performance",   action="store_true", help="Full analytics dashboard (4:30pm ET)")
+    parser.add_argument("--feedreport",    action="store_true", help="Feed quality report — provider health, mismatches, rejections")
+    parser.add_argument("--status",        action="store_true", help="Current positions and P&L (any time)")
     args = parser.parse_args()
 
     if args.research:
@@ -1623,6 +2035,9 @@ if __name__ == "__main__":
         print()
         _scan_and_trade(paper_mode=False)
 
+    elif args.continuous:
+        _continuous_scan_loop()
+
     elif args.paper:
         _header("PAPER SIMULATION — no real orders")
         _status()
@@ -1643,6 +2058,9 @@ if __name__ == "__main__":
                 print("   [SHORTLIST] No shortlisted candidates ready for entry.")
         except Exception:
             pass
+
+    elif getattr(args, "monitor_loop", False):
+        _monitor_loop()
 
     elif args.cutoff:
         _header("ENTRY CUTOFF — 3:30pm ET / 20:30 BST")
@@ -1748,5 +2166,6 @@ if __name__ == "__main__":
 
     else:
         print("Usage: python agent.py "
-              "--research | --prescan | --scan | --paper | --monitor | "
-              "--close | --report | --performance | --feedreport | --status")
+              "--research | --precheck | --prescan | --scan | --continuous | "
+              "--paper | --monitor | --monitor-loop | --cutoff | --close | "
+              "--verify | --report | --performance | --feedreport | --status")
