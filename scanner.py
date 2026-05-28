@@ -4,7 +4,7 @@ Returns enriched candidates with spread, volatility, sector, and bid/ask data.
 """
 import finnhub
 import yfinance as yf
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, timezone
 from ib_insync import Stock
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockSnapshotRequest
@@ -59,9 +59,16 @@ def _snapshots(symbols: list) -> dict:
     """Alpaca snapshot fallback — used when IB Gateway is unavailable."""
     client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
     try:
-        return client.get_stock_snapshot(StockSnapshotRequest(symbol_or_symbols=symbols))
+        return client.get_stock_snapshot(StockSnapshotRequest(
+            symbol_or_symbols=symbols, feed="sip"
+        ))
     except Exception:
-        return {}
+        # SIP tier unavailable (free plan) — fall back without explicit feed
+        try:
+            print("   [DATA_FEED_DEGRADED] SIP feed unavailable — falling back to IEX tier")
+            return client.get_stock_snapshot(StockSnapshotRequest(symbol_or_symbols=symbols))
+        except Exception:
+            return {}
 
 
 def _normalize_ibkr(ticker, symbol: str) -> dict | None:
@@ -280,6 +287,7 @@ def scan_for_candidates() -> list[dict]:
                 "is_afternoon_setup": afternoon_cont,
                 "_is_top_gapper":     symbol in gappers,
                 "_data_src":          md["data_src"],
+                "quote_fetched_at":   datetime.now(timezone.utc).isoformat(),
             })
         except Exception:
             continue

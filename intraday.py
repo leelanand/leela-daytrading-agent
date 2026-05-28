@@ -65,6 +65,7 @@ def get_intraday_alignment() -> tuple[str, str]:
             timeframe=TimeFrame.Minute,
             start=start,
             end=end,
+            feed="sip",
         )
         data    = client.get_stock_bars(req)
         spy_raw = list(data["SPY"]) if "SPY" in data else []

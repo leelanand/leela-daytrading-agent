@@ -267,6 +267,34 @@ def _client() -> TradingClient:
     return TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=PAPER_TRADING)
 
 
+def _data_confidence(pick: dict) -> int:
+    """0–100 score reflecting data quality for this candidate at order time."""
+    score = 100
+    # Quote age penalty
+    q_ts = pick.get("quote_fetched_at")
+    if q_ts:
+        try:
+            from datetime import timezone as _tz
+            age_s = (datetime.now(_tz.utc) - datetime.fromisoformat(q_ts)).total_seconds()
+            if age_s > 20:
+                score -= min(30, int(age_s - 20))
+        except Exception:
+            score -= 10
+    else:
+        score -= 20  # no timestamp at all
+    # VWAP source
+    if not pick.get("vwap") or pick.get("vwap", 0) <= 0:
+        score -= 10
+    # Data source quality (IEX = wider spreads / delayed)
+    if pick.get("_data_src") not in ("ibkr", "sip", "alpaca_sip"):
+        score -= 15
+    # Spread width
+    spread = pick.get("spread_pct", 0)
+    if spread > 0.1:
+        score -= min(15, int((spread - 0.1) * 100))
+    return max(0, score)
+
+
 def _pdt_budget() -> dict:
     """
     Return full PDT budget for LIVE sub-$25k accounts.
@@ -1722,6 +1750,7 @@ def _scan_and_trade(paper_mode: bool = False):
             "age_mins":               round(age_mins, 1),
             "stale":                  is_stale,
             "high_vol_severity":      "moderate" if high_vol_moderate else ("mild" if high_vol_mode else "none"),
+            "data_confidence_score":  _data_confidence(pick),
         }
 
         # Log all feed inputs used for this decision
@@ -1896,6 +1925,23 @@ def _scan_and_trade(paper_mode: bool = False):
                   f"stop={stop_pct:.1%}  setup={setup_type}  "
                   f"orb={'Y' if orb_breakout else 'n'}  pullback={pullback_result.get('pullback_quality','N/A')}")
             print(f"   {shares}sh @ ${price:.2f} = ${cost:,.0f} | {reasoning}")
+
+            # Quote staleness guard — reject if snapshot is too old
+            if TRADING_MODE == "LIVE":
+                from datetime import timezone as _tz
+                q_ts = pick.get("quote_fetched_at")
+                if q_ts:
+                    try:
+                        age_s = (datetime.now(_tz.utc) - datetime.fromisoformat(q_ts)).total_seconds()
+                        if age_s > QUOTE_STALE_SECS:
+                            print(f"   [STALE_QUOTE_REJECT] {symbol}: quote is {age_s:.0f}s old (>{QUOTE_STALE_SECS}s)")
+                            log_audit("STALE_QUOTE_REJECT", symbol, {
+                                "age_s": round(age_s, 1), "limit_s": QUOTE_STALE_SECS,
+                                "quote_fetched_at": q_ts,
+                            })
+                            continue
+                    except Exception:
+                        pass
 
             # Price safety guard — hard reject before broker submission
             limit_price = price * (1 + min(_limit_offset(spread_pct), MAX_LIMIT_SLIPPAGE_PCT))

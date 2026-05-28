@@ -29,6 +29,7 @@ def _get_1min_bars(symbol: str, n: int) -> list[dict]:
             timeframe=TimeFrame.Minute,
             start=start,
             end=end,
+            feed="sip",
         )
         data = client.get_stock_bars(req)
         bars = list(data[symbol]) if symbol in data else []
