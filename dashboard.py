@@ -543,10 +543,12 @@ def _schedule_rows(audit: list[dict]) -> list[dict]:
         else:
             status, note = "pending", ""
 
-        # ET time
-        h, m  = divmod(hhmm, 100)
-        et_h  = (h - 5) % 24
-        et    = f"{et_h:02d}:{m:02d}"
+        # ET time — DST-aware via zoneinfo (handles BST/GMT and EDT/EST transitions)
+        h, m    = divmod(hhmm, 100)
+        uk_dt   = datetime(now_bst.year, now_bst.month, now_bst.day, h, m,
+                           tzinfo=ZoneInfo("Europe/London"))
+        et_dt   = uk_dt.astimezone(ET)
+        et      = et_dt.strftime("%H:%M")
 
         rows.append({
             "bst":    f"{h:02d}:{m:02d}",
@@ -784,16 +786,28 @@ let currentBSThhmm = 0;
 
 function hhmm(dt) { return dt.getHours() * 100 + dt.getMinutes(); }
 
+const _fmtUK = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+});
+const _fmtET = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+});
+const _fmtUKZone = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Europe/London', timeZoneName: 'short'
+});
+const _fmtUKHM = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hour12: false
+});
+
 function tickClock() {
   const now = new Date();
-  // BST = UTC+1
-  const bst = new Date(now.getTime() + 60*60*1000);
-  const et  = new Date(now.getTime() - 4*60*60*1000); // EDT UTC-4
-  document.getElementById('clock-bst').textContent =
-    bst.toISOString().substring(11,19) + ' BST';
-  document.getElementById('clock-et').textContent =
-    et.toISOString().substring(11,19) + ' ET';
-  currentBSThhmm = bst.getUTCHours() * 100 + bst.getUTCMinutes();
+  const ukZone = _fmtUKZone.formatToParts(now).find(p => p.type === 'timeZoneName')?.value || 'BST';
+  document.getElementById('clock-bst').textContent = _fmtUK.format(now) + ' ' + ukZone;
+  document.getElementById('clock-et').textContent  = _fmtET.format(now) + ' ET';
+  const hm = _fmtUKHM.formatToParts(now);
+  const ukH = parseInt(hm.find(p => p.type === 'hour').value);
+  const ukM = parseInt(hm.find(p => p.type === 'minute').value);
+  currentBSThhmm = ukH * 100 + ukM;
 }
 
 function statusIcon(s) {

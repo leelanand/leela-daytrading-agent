@@ -41,7 +41,7 @@ WATCHLIST_SCORE     = 60       # 0-100: monitor but don't trade yet
 
 # ── Risk controls ──────────────────────────────────────────────────────────────
 DAILY_LOSS_LIMIT    = 0.03     # stop trading if down 3% on the day
-MAX_TRADES_PER_DAY  = 5        # max new entries per day
+MAX_TRADES_PER_DAY  = 3        # matches PDT raw limit; PDT guard further reduces to 2 usable
 MAX_SECTOR_EXPOSURE = 0.40     # max 40% of portfolio in one sector
 MAX_SPREAD_PCT      = 0.30     # max bid/ask spread as % of price
 MIN_VOLUME_DAILY    = 300_000  # minimum daily share volume
