@@ -356,6 +356,18 @@ LOW_VOLUME_MIN_SCORE  = _mode.SCORE_THRESHOLDS["LOW_VOLUME"]
 HIGH_VOL_MIN_SCORE    = _mode.SCORE_THRESHOLDS.get("HIGH_VOL", 80)
 CANDIDATE_EXPIRY_MINS = _mode.CANDIDATE_EXPIRY_MINS
 
+# Position sizing and daily loss — mode can override defaults
+if hasattr(_mode, "MAX_POSITIONS"):
+    MAX_POSITIONS         = _mode.MAX_POSITIONS
+if hasattr(_mode, "POSITION_SIZE_PCT"):
+    POSITION_SIZE_PCT     = _mode.POSITION_SIZE_PCT
+if hasattr(_mode, "MIN_POSITION_SIZE_PCT"):
+    MIN_POSITION_SIZE_PCT = _mode.MIN_POSITION_SIZE_PCT
+if hasattr(_mode, "MAX_POSITION_SIZE_PCT"):
+    MAX_POSITION_SIZE_PCT = _mode.MAX_POSITION_SIZE_PCT
+if hasattr(_mode, "DAILY_LOSS_LIMIT"):
+    DAILY_LOSS_LIMIT      = _mode.DAILY_LOSS_LIMIT
+
 # Quality override parameters
 QUALITY_OVERRIDE_MIN_RVOL       = _mode.QUALITY_OVERRIDE_MIN_RVOL
 QUALITY_OVERRIDE_MAX_SPREAD     = _mode.QUALITY_OVERRIDE_MAX_SPREAD

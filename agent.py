@@ -236,6 +236,33 @@ def _client() -> TradingClient:
     return TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=PAPER_TRADING)
 
 
+def _pdt_check() -> tuple[bool, str]:
+    """
+    Block order if the account has used all 3 PDT day-trade slots in the rolling
+    5-business-day window.  Only enforced in LIVE mode on sub-$25k accounts —
+    pattern_day_trader flag or equity >= $25k bypasses the check.
+    Fails open (returns True) on any API error so a connectivity glitch never
+    silently blocks a valid trade.
+    """
+    if TRADING_MODE != "LIVE":
+        return True, "paper mode — PDT not applicable"
+    try:
+        account       = _client().get_account()
+        equity        = float(getattr(account, "equity", 0) or 0)
+        if equity >= 25_000:
+            return True, f"equity ${equity:,.0f} >= $25k — PDT not applicable"
+        count         = int(getattr(account, "daytrade_count", 0) or 0)
+        pdt_flagged   = getattr(account, "pattern_day_trader", False)
+        if pdt_flagged:
+            return False, "account flagged as pattern_day_trader — contact Alpaca support"
+        if count >= 3:
+            return False, (f"PDT limit: {count}/3 day trades used in rolling 5-day window — "
+                           f"no new positions until window resets")
+        return True, f"PDT ok: {count}/3 day trades used (equity ${equity:,.0f})"
+    except Exception as e:
+        return True, f"PDT check skipped (API error: {e}) — allowing trade"
+
+
 def _pre_submit_check(symbol: str, intended_price: float, intended_spread: float,
                       portfolio: float) -> tuple[bool, str]:
     """Re-check 12 conditions immediately before order submission."""
@@ -1189,6 +1216,16 @@ def _scan_and_trade(paper_mode: bool = False):
                 "trading_mode": TRADING_MODE, "is_experimental": is_experimental,
             })
             continue
+
+        # PDT guard — live only; checked once per symbol just before submission
+        if not paper_mode:
+            pdt_ok, pdt_reason = _pdt_check()
+            if not pdt_ok:
+                print(f"   [PDT_BLOCK] {pdt_reason}")
+                log_audit("PDT_BLOCK", symbol, {
+                    "reason": pdt_reason, "score": score, "setup_type": setup_type,
+                })
+                continue
 
         # LIVE promoted-setup logging (informational, LIVE_REQUIRE_PROMOTED_SETUPS gates this)
         if LIVE_REQUIRE_PROMOTED_SETUPS and setup_type not in LIVE_PROMOTED_SETUPS:

@@ -51,3 +51,17 @@ DECAY_STRICT_EXPIRE = True
 # ── Candidate expiry and gapper refresh ──────────────────────────────────────
 CANDIDATE_EXPIRY_MINS        = 60
 GAPPER_REFRESH_INTERVAL_MINS = 15
+
+# ── Position sizing — tuned for sub-$25k account under PDT rule ───────────────
+# PDT allows 3 day trades per rolling 5-day window.
+# MAX_POSITIONS=2 conserves the allowance: worst case 2 trades/day × 3 days = fine.
+# 40% target per position × 2 max = 80% deployed at full capacity (~90% target met
+# across real fills which are rarely simultaneous).
+MAX_POSITIONS         = 2
+POSITION_SIZE_PCT     = 0.40   # target per position
+MIN_POSITION_SIZE_PCT = 0.25   # floor — never smaller than 25%
+MAX_POSITION_SIZE_PCT = 0.45   # cap  — 2 × 0.45 = 90% max deployment
+
+# Daily loss limit: 2% of equity — tighter than paper given real capital at risk
+# On $1,328 this is ~$26.56; stops all trading for the day if hit.
+DAILY_LOSS_LIMIT = 0.02
