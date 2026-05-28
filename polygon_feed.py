@@ -81,6 +81,11 @@ def validate_cross_provider(
             f"secondary_quote_stale: {age}s old (max {QUOTE_MAX_STALENESS_SECS}s)"
         ), secondary
 
+    # IEX subscription returns $0.00 when no real-time quote is available;
+    # treat as unavailable rather than a mismatch against the secondary feed.
+    if alpaca_price <= 0:
+        return True, "no_secondary_provider: alpaca_iex_unavailable", secondary
+
     mid = secondary.get("mid", 0)
 
     # Price divergence check (works for both real-time and bar-data mid)
