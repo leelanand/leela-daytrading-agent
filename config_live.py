@@ -65,3 +65,12 @@ MAX_POSITION_SIZE_PCT = 0.45   # cap  — 2 × 0.45 = 90% max deployment
 # Daily loss limit: 2% of equity — tighter than paper given real capital at risk
 # On $1,328 this is ~$26.56; stops all trading for the day if hit.
 DAILY_LOSS_LIMIT = 0.02
+
+# ── Live order time gate (ET) ─────────────────────────────────────────────────
+# Orders are blocked outside this window.  Earliest = after opening chaos clears
+# (chaos lockout already blocks < 09:45); this gate is the hard live-account
+# safety layer that survives any future chaos-lockout change.
+# Latest new entry = 15:30 ET so positions have time to fill + trail before
+# force-close at 15:44.
+LIVE_ORDER_EARLIEST_ET = (9,  45)   # 09:45 ET / 14:45 BST — no live orders before this
+LIVE_ORDER_LATEST_ET   = (15, 30)   # 15:30 ET / 20:30 BST — no new entries after this

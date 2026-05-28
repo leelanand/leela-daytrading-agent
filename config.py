@@ -23,7 +23,7 @@ POSITION_SIZE_PCT = 0.20
 STOP_LOSS_PCT     = 0.015
 TAKE_PROFIT_PCT   = 0.030
 FORCE_CLOSE_HOUR  = 15
-FORCE_CLOSE_MIN   = 45
+FORCE_CLOSE_MIN   = 44   # 15:44 ET / 20:44 BST — task fires at 20:44 BST
 
 USE_LIMIT_ORDERS  = True       # limit orders preferred over market
 LIMIT_OFFSET_PCT  = 0.001      # buy limit = price * (1 + LIMIT_OFFSET_PCT)
@@ -387,6 +387,10 @@ DECAY_EXPIRE_MINS   = _mode.DECAY_EXPIRE_MINS
 DECAY_STRICT_EXPIRE = _mode.DECAY_STRICT_EXPIRE
 
 GAPPER_REFRESH_INTERVAL_MINS = _mode.GAPPER_REFRESH_INTERVAL_MINS
+
+# Live order time gate — earliest and latest ET times for new live entries
+LIVE_ORDER_EARLIEST_ET = getattr(_mode, "LIVE_ORDER_EARLIEST_ET", (9,  45))
+LIVE_ORDER_LATEST_ET   = getattr(_mode, "LIVE_ORDER_LATEST_ET",   (15, 30))
 
 # Live base score — always 78, used to tag experimental trades in PAPER mode
 LIVE_BASE_SCORE = 78

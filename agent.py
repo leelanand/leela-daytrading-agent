@@ -1,17 +1,28 @@
 """
-Day Trading Agent — intraday momentum, all positions closed by 3:45pm ET.
+Day Trading Agent — intraday momentum, all positions closed by 3:44pm ET.
 
-Modes:
-  --research    9:00am ET  — pre-market fundamentals + Claude brief for full watchlist
-  --prescan     9:45am ET  — discover & score candidates, save to JSON, NO orders
-  --morning     alias for --prescan (backwards compat)
-  --scan        10:00am+   — load prescan candidates, validate, execute
-  --paper       simulate full --scan logic without placing real orders
-  --monitor     every 2 min — check trailing stops, time exits, momentum flips
-  --close       3:45pm ET  — force-close all positions
-  --report      4:00pm ET  — basic P&L from Alpaca
-  --performance 4:15pm ET  — full analytics dashboard (expectancy, PF, windows)
-  --status      any time   — current positions and P&L
+Daily schedule (BST / ET):
+  08:30 / 13:30  --research    Pre-market fundamentals + Claude brief for full watchlist
+  09:40 / 14:40  --precheck    Data readiness + live gate check (feeds, account, clock)
+  09:45 / 14:45  --prescan     Discover & score candidates, save to JSON, NO orders
+  10:00 / 15:00  --scan        Load prescan candidates, validate, execute (Scan1)
+  10:00 / 15:00  --monitor     Check trailing stops, time exits, momentum flips (every 2 min)
+  10:30 / 15:30  --scan        Scan2
+  11:30 / 16:30  --scan        Scan3
+  [midday block  12:00–13:00 ET / 17:00–18:00 BST — scans skip automatically]
+  13:30 / 18:30  --scan        Scan4
+  15:00 / 20:00  --scan        Scan5
+  15:30 / 20:30  --cutoff      Cancel unfilled limit orders — entry window closes
+  15:44 / 20:44  --close       Force-close all positions
+  15:55 / 20:55  --verify      Emergency flatness check — close anything still open
+  16:15 / 21:15  --report      Basic P&L from Alpaca
+  16:30 / 21:30  --performance Full analytics dashboard (expectancy, PF, windows)
+
+Other:
+  --paper       Simulate full --scan logic without placing real orders
+  --morning     Alias for --prescan (backwards compat)
+  --status      Any time — current positions and P&L
+  --feedreport  Feed quality report — provider health, mismatches, rejections
 """
 import argparse
 import sys
@@ -24,7 +35,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from alpaca.trading.client import TradingClient
 from config import (
-    ALPACA_API_KEY, ALPACA_SECRET_KEY, PAPER_TRADING, TRADING_MODE,
+    ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, PAPER_TRADING, TRADING_MODE,
+    LIVE_ORDER_EARLIEST_ET, LIVE_ORDER_LATEST_ET,
     MIN_SCORE_TO_TRADE, CHOPPY_MIN_SCORE, WATCHLIST_SCORE, KILL_SWITCH,
     BLOCK_MIDDAY, BLOCK_MIDDAY_START, BLOCK_MIDDAY_END,
     MIN_MOMENTUM_TO_TRADE,
@@ -263,9 +275,54 @@ def _pdt_check() -> tuple[bool, str]:
         return True, f"PDT check skipped (API error: {e}) — allowing trade"
 
 
+def _live_time_gate() -> tuple[bool, str]:
+    """
+    Block live orders outside the allowed window (09:45–15:30 ET).
+    Returns True unconditionally for paper mode.
+    """
+    if TRADING_MODE != "LIVE":
+        return True, "paper mode — time gate not applicable"
+    now_et  = datetime.now(ET)
+    now_bst = now_et.astimezone(ZoneInfo("Europe/London"))
+    mins    = now_et.hour * 60 + now_et.minute
+    lo_h, lo_m = LIVE_ORDER_EARLIEST_ET
+    hi_h, hi_m = LIVE_ORDER_LATEST_ET
+    lo_mins    = lo_h * 60 + lo_m
+    hi_mins    = hi_h * 60 + hi_m
+    et_str  = now_et.strftime("%H:%M ET")
+    bst_str = now_bst.strftime("%H:%M BST")
+    if mins < lo_mins:
+        return False, (f"LIVE_TIME_GATE_REJECT: too early — {et_str} / {bst_str} "
+                       f"(live orders allowed from {lo_h:02d}:{lo_m:02d} ET / "
+                       f"{now_et.replace(hour=lo_h, minute=lo_m).astimezone(ZoneInfo('Europe/London')).strftime('%H:%M')} BST)")
+    if mins > hi_mins:
+        return False, (f"LIVE_TIME_GATE_REJECT: past new-entry cutoff — {et_str} / {bst_str} "
+                       f"(latest new entry {hi_h:02d}:{hi_m:02d} ET / "
+                       f"{now_et.replace(hour=hi_h, minute=hi_m).astimezone(ZoneInfo('Europe/London')).strftime('%H:%M')} BST)")
+    return True, f"time gate ok: {et_str} / {bst_str}"
+
+
+def _verify_account_mode() -> None:
+    """
+    Abort live scan if account mode is misconfigured.
+    Called only for real (non-paper) scan/execute runs.
+    """
+    if TRADING_MODE != "LIVE":
+        return
+    if PAPER_TRADING:
+        print("\n  *** ACCOUNT_MODE ERROR: TRADING_MODE=LIVE but PAPER_TRADING=True ***")
+        print("  *** Set PAPER_TRADING=false in .env — aborting to protect capital ***")
+        sys.exit(1)
+    if "paper-api" in ALPACA_BASE_URL:
+        print(f"\n  *** ACCOUNT_MODE ERROR: TRADING_MODE=LIVE but endpoint is {ALPACA_BASE_URL} ***")
+        print("  *** Expected https://api.alpaca.markets — aborting to protect capital ***")
+        sys.exit(1)
+    print(f"  [ACCOUNT_MODE] LIVE | endpoint: {ALPACA_BASE_URL}")
+
+
 def _pre_submit_check(symbol: str, intended_price: float, intended_spread: float,
                       portfolio: float) -> tuple[bool, str]:
-    """Re-check 12 conditions immediately before order submission."""
+    """Re-check 13 conditions immediately before order submission."""
     # 1. Halt status
     try:
         halted, halt_desc = check_halt(symbol)
@@ -288,7 +345,15 @@ def _pre_submit_check(symbol: str, intended_price: float, intended_spread: float
     if not _market_open():
         return False, "market_closed"
 
-    # 7. Earnings re-check
+    # 7. Live order time gate (09:45–15:30 ET) — hard block for live mode
+    tg_ok, tg_reason = _live_time_gate()
+    if not tg_ok:
+        log_audit("LIVE_TIME_GATE_REJECT", symbol, {
+            "reason": tg_reason, "trading_mode": TRADING_MODE,
+        })
+        return False, tg_reason
+
+    # 8. Earnings re-check
     try:
         earn_block, earn_desc = check_earnings(symbol)
         if earn_block:
@@ -296,7 +361,7 @@ def _pre_submit_check(symbol: str, intended_price: float, intended_spread: float
     except Exception:
         pass
 
-    # 8. Max trades today
+    # 9. Max trades today
     try:
         closed_today = len(today_summary())
         if closed_today >= MAX_TRADES_PER_DAY:
@@ -307,25 +372,25 @@ def _pre_submit_check(symbol: str, intended_price: float, intended_spread: float
     try:
         client = _client()
 
-        # 9. Duplicate open order check
+        # 10. Duplicate open order check
         open_orders = client.get_orders()
         dupes = [o for o in open_orders if hasattr(o, "symbol") and o.symbol == symbol]
         if dupes:
             return False, f"duplicate_order: {len(dupes)} order(s) already open for {symbol}"
 
-        # 10. Buying power minimum
+        # 11. Buying power minimum
         acct = client.get_account()
         bp   = float(acct.buying_power or 0)
         min_cost = intended_price * max(1, int(portfolio * MIN_POSITION_SIZE_PCT / max(intended_price, 0.01)))
         if bp < min_cost:
             return False, f"buying_power: ${bp:.0f} < min_cost ${min_cost:.0f}"
 
-        # 11. Spread re-check (intended vs configured max)
+        # 12. Spread re-check (intended vs configured max)
         from config import MAX_SPREAD_PCT
         if intended_spread > MAX_SPREAD_PCT:
             return False, f"spread_widened: {intended_spread:.2f}% > {MAX_SPREAD_PCT}%"
 
-        # 12. Price sanity (not aberrantly priced)
+        # 13. Price sanity (not aberrantly priced)
         if intended_price <= 0 or intended_price > 50_000:
             return False, f"price_invalid: ${intended_price:.2f}"
 
@@ -340,11 +405,16 @@ def _market_open() -> bool:
 
 
 def _header(mode: str):
-    now = datetime.now(ET).strftime("%Y-%m-%d %H:%M ET")
-    tag = "[PAPER]" if PAPER_TRADING else "[LIVE]"
+    now_et  = datetime.now(ET)
+    now_bst = now_et.astimezone(ZoneInfo("Europe/London"))
+    tag     = "[PAPER]" if PAPER_TRADING else "[LIVE]"
     print(f"\n{'='*62}")
-    print(f"  LEELA DAY TRADING AGENT {tag} -- {now}")
+    print(f"  LEELA DAY TRADING AGENT {tag} -- {now_et.strftime('%Y-%m-%d %H:%M ET')} / {now_bst.strftime('%H:%M BST')}")
     print(f"  Mode: {mode}")
+    if TRADING_MODE == "LIVE":
+        print(f"  ACCOUNT_MODE=LIVE | endpoint: {ALPACA_BASE_URL}")
+    else:
+        print(f"  ACCOUNT_MODE=PAPER | endpoint: {ALPACA_BASE_URL}")
     print(f"{'='*62}\n")
 
 
@@ -364,7 +434,7 @@ def _status():
     portfolio = float(acct.portfolio_value)
     start     = float(acct.last_equity)
     daily_pnl = portfolio - start
-    daily_pct = daily_pnl / start * 100
+    daily_pct = daily_pnl / start * 100 if start else 0.0
 
     print(f"  Portfolio  : ${portfolio:,.2f}")
     print(f"  Today P&L  : ${daily_pnl:+,.2f} ({daily_pct:+.2f}%)")
@@ -411,6 +481,125 @@ def _current_window() -> str:
     if mins < 13 * 60:        return "midday"
     if mins < 15 * 60:        return "afternoon"
     return "power_hour"
+
+
+def _precheck():
+    """
+    Data readiness + live gate check — runs at 09:40 ET / 14:40 BST, 5 min before prescan.
+    Verifies feeds, account connectivity, market clock, and LIVE mode config.
+    No orders placed.  Logs PRECHECK_PASS or PRECHECK_FAIL to audit.
+    """
+    now_et  = datetime.now(ET)
+    now_bst = now_et.astimezone(ZoneInfo("Europe/London"))
+    results: list[tuple[str, bool, str]] = []   # (check, ok, detail)
+
+    # 1. Account mode + URL sanity
+    if TRADING_MODE == "LIVE" and ("paper-api" in ALPACA_BASE_URL or PAPER_TRADING):
+        results.append(("account_mode", False,
+                        f"LIVE mode but endpoint={ALPACA_BASE_URL} paper_flag={PAPER_TRADING}"))
+    else:
+        results.append(("account_mode", True,
+                        f"ACCOUNT_MODE={TRADING_MODE} endpoint={ALPACA_BASE_URL}"))
+
+    # 2. Alpaca connectivity + account health
+    try:
+        client  = _client()
+        acct    = client.get_account()
+        equity  = float(acct.portfolio_value or 0)
+        bp      = float(acct.buying_power or 0)
+        blocked = getattr(acct, "trading_blocked", False) or getattr(acct, "account_blocked", False)
+        if blocked:
+            results.append(("alpaca_account", False, f"account blocked — check Alpaca dashboard"))
+        else:
+            results.append(("alpaca_account", True,
+                            f"equity=${equity:,.2f}  buying_power=${bp:,.2f}"))
+    except Exception as e:
+        results.append(("alpaca_account", False, f"API error: {e}"))
+
+    # 3. Market clock
+    try:
+        clock      = _client().get_clock()
+        is_open    = clock.is_open
+        next_open  = clock.next_open.astimezone(ET).strftime("%H:%M ET") if not is_open else "—"
+        next_close = clock.next_close.astimezone(ET).strftime("%H:%M ET")
+        results.append(("market_clock", True,
+                        f"open={is_open}  next_close={next_close}" +
+                        (f"  next_open={next_open}" if not is_open else "")))
+    except Exception as e:
+        results.append(("market_clock", False, f"clock error: {e}"))
+
+    # 4. Feed health
+    try:
+        healthy, _ = _run_feed_health(paper_mode=True)   # read-only, never forces paper here
+        results.append(("feed_health", healthy,
+                        "feeds ok" if healthy else "feed degraded — check feed_health.json"))
+    except Exception as e:
+        results.append(("feed_health", False, f"health check error: {e}"))
+
+    # 5. Data provider quote test
+    try:
+        from massive_feed import active_providers
+        providers = active_providers()
+        results.append(("data_providers", bool(providers),
+                        f"active: {providers}" if providers else "no data providers configured"))
+    except Exception as e:
+        results.append(("data_providers", False, f"provider check error: {e}"))
+
+    # 6. PDT headroom (LIVE only)
+    if TRADING_MODE == "LIVE":
+        pdt_ok, pdt_msg = _pdt_check()
+        results.append(("pdt_headroom", pdt_ok, pdt_msg))
+
+    # 7. Live time gate readiness (will orders be allowed at prescan time?)
+    tg_ok, tg_msg = _live_time_gate()
+    results.append(("time_gate", tg_ok, tg_msg))
+
+    # Print results
+    all_ok = all(ok for _, ok, _ in results)
+    print(f"  {'PRECHECK_PASS' if all_ok else 'PRECHECK_FAIL'}  "
+          f"{now_et.strftime('%H:%M ET')} / {now_bst.strftime('%H:%M BST')}\n")
+    for check, ok, detail in results:
+        tag = "  OK" if ok else "FAIL"
+        print(f"  [{tag}] {check:<18} {detail}")
+
+    log_audit("PRECHECK_PASS" if all_ok else "PRECHECK_FAIL", details={
+        "checks": {c: {"ok": ok, "detail": d} for c, ok, d in results},
+        "trading_mode": TRADING_MODE,
+    })
+    print()
+
+
+def _cutoff():
+    """
+    Entry cutoff — runs at 15:30 ET / 20:30 BST.
+    Cancels all open (unfilled) limit orders.  Does NOT close positions.
+    Force-close at 15:44 handles open positions.
+    """
+    client    = _client()
+    open_ords = client.get_orders()
+    now_et    = datetime.now(ET)
+    now_bst   = now_et.astimezone(ZoneInfo("Europe/London"))
+
+    if not open_ords:
+        print(f"  [CUTOFF] No open orders — entry window clean "
+              f"({now_et.strftime('%H:%M ET')} / {now_bst.strftime('%H:%M BST')})")
+        log_audit("ENTRY_CUTOFF", details={"cancelled": 0})
+        return
+
+    symbols = [o.symbol for o in open_ords if hasattr(o, "symbol")]
+    print(f"  [CUTOFF] Cancelling {len(open_ords)} open order(s): {', '.join(symbols)}")
+    try:
+        client.cancel_orders()
+    except Exception as e:
+        print(f"  [CUTOFF] cancel_orders error: {e}")
+
+    log_audit("ENTRY_CUTOFF", details={
+        "cancelled": len(open_ords),
+        "symbols":   symbols,
+        "time_et":   now_et.strftime("%H:%M"),
+        "time_bst":  now_bst.strftime("%H:%M"),
+    })
+    print(f"  [CUTOFF] Done — entry window closed, positions held until force-close at 15:44 ET")
 
 
 def _prescan():
@@ -536,6 +725,9 @@ def _prescan():
 
 def _scan_and_trade(paper_mode: bool = False):
     """Load prescan candidates, validate all gates, execute limit orders (or simulate)."""
+    if not paper_mode:
+        _verify_account_mode()   # aborts if LIVE mode is misconfigured
+
     if not _market_open():
         print("   Market is closed — skipping scan.")
         return
@@ -1364,7 +1556,7 @@ def _report():
     portfolio = float(acct.portfolio_value)
     start     = float(acct.last_equity)
     daily_pnl = portfolio - start
-    daily_pct = daily_pnl / start * 100
+    daily_pct = daily_pnl / start * 100 if start else 0.0
 
     print(f"  Portfolio  : ${portfolio:,.2f}")
     print(f"  Today P&L  : ${daily_pnl:+,.2f} ({daily_pct:+.2f}%)")
@@ -1394,24 +1586,30 @@ if __name__ == "__main__":
     init_db()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--prescan",     action="store_true", help="Discover & score candidates, NO orders (9:45am)")
+    parser.add_argument("--research",    action="store_true", help="Pre-market research — fundamentals + Claude brief (8:30am ET)")
+    parser.add_argument("--precheck",    action="store_true", help="Data readiness + live gate check (9:40am ET)")
+    parser.add_argument("--prescan",     action="store_true", help="Discover & score candidates, NO orders (9:45am ET)")
     parser.add_argument("--morning",     action="store_true", help="Alias for --prescan")
-    parser.add_argument("--scan",        action="store_true", help="Load prescan candidates and execute (10:00am+)")
-    parser.add_argument("--paper",       action="store_true", help="Simulate scan/execute without real orders")
+    parser.add_argument("--scan",        action="store_true", help="Load prescan candidates and execute (10:00am+ ET)")
+    parser.add_argument("--paper",       action="store_true", help="Simulate full --scan logic without real orders")
     parser.add_argument("--monitor",     action="store_true", help="Check trailing stops and advanced exits (every 2 min)")
-    parser.add_argument("--close",       action="store_true", help="Force-close all positions (3:45pm ET)")
-    parser.add_argument("--report",      action="store_true", help="Basic P&L report (4:00pm ET)")
-    parser.add_argument("--performance", action="store_true", help="Full analytics dashboard (4:15pm ET)")
+    parser.add_argument("--cutoff",      action="store_true", help="Entry cutoff — cancel unfilled limit orders (3:30pm ET)")
+    parser.add_argument("--close",       action="store_true", help="Force-close all positions (3:44pm ET)")
+    parser.add_argument("--verify",      action="store_true", help="Emergency flatness check — close anything still open (3:55pm ET)")
+    parser.add_argument("--report",      action="store_true", help="Basic P&L report (4:15pm ET)")
+    parser.add_argument("--performance", action="store_true", help="Full analytics dashboard (4:30pm ET)")
     parser.add_argument("--feedreport",  action="store_true", help="Feed quality report — provider health, mismatches, rejections")
-    parser.add_argument("--research",    action="store_true", help="Pre-market research — fundamentals + Claude brief for all watchlist symbols (9:00am ET)")
-    parser.add_argument("--verify",      action="store_true", help="Emergency flatness check at 3:55pm ET — close anything still open")
-    parser.add_argument("--status",      action="store_true", help="Current positions and P&L")
+    parser.add_argument("--status",      action="store_true", help="Current positions and P&L (any time)")
     args = parser.parse_args()
 
     if args.research:
         _header("PRE-MARKET RESEARCH")
         from research import run_premarket_research
         run_premarket_research()
+
+    elif args.precheck:
+        _header("DATA READINESS — 9:40am ET / 14:40 BST")
+        _precheck()
 
     elif args.prescan or args.morning:
         _header("PRESCAN — no orders placed")
@@ -1446,8 +1644,12 @@ if __name__ == "__main__":
         except Exception:
             pass
 
+    elif args.cutoff:
+        _header("ENTRY CUTOFF — 3:30pm ET / 20:30 BST")
+        _cutoff()
+
     elif args.close:
-        _header("FORCE CLOSE — 3:45pm ET")
+        _header("FORCE CLOSE — 3:44pm ET / 20:44 BST")
         import time
         close_all_positions()
         log_audit("FORCE_CLOSE")
