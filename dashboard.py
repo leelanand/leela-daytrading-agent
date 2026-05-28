@@ -9,6 +9,8 @@ Open: http://localhost:8765
 import json
 import re
 import sqlite3
+import time
+import urllib.request
 from datetime import date, datetime
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -193,6 +195,81 @@ def _ibkr_log_tail() -> list[str]:
         return []
 
 
+def _env_dict(directory: Path) -> dict:
+    result = {}
+    try:
+        for line in (directory / ".env").read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                result[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return result
+
+
+_balance_cache: dict = {}
+_balance_cache_ts: float = 0.0
+_BALANCE_TTL = 60  # seconds
+
+
+def _fetch_alpaca_balance() -> str:
+    env     = _env_dict(ALPACA_DIR)
+    api_key = env.get("ALPACA_API_KEY", "")
+    secret  = env.get("ALPACA_SECRET_KEY", "")
+    paper   = env.get("PAPER_TRADING", "false").lower() == "true"
+    if not api_key:
+        return ""
+    try:
+        base = "https://paper-api.alpaca.markets" if paper else "https://api.alpaca.markets"
+        req  = urllib.request.Request(
+            f"{base}/v2/account",
+            headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": secret},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+            val  = data.get("portfolio_value") or data.get("equity", "")
+            return f"{float(val):,.2f}" if val else ""
+    except Exception:
+        return ""
+
+
+def _fetch_ibkr_balance() -> str:
+    try:
+        import asyncio
+        from ib_insync import IB
+        env  = _env_dict(IBKR_DIR)
+        port = int(env.get("IBKR_PORT", "4001"))
+
+        async def _get() -> str:
+            ib = IB()
+            await ib.connectAsync("127.0.0.1", port, clientId=9, timeout=5)
+            await asyncio.sleep(0.5)
+            for v in ib.accountValues():
+                if v.tag == "NetLiquidation" and v.currency == "USD":
+                    val = v.value
+                    ib.disconnect()
+                    return f"{float(val):,.2f}"
+            ib.disconnect()
+            return ""
+
+        return asyncio.run(_get())
+    except Exception:
+        return ""
+
+
+def _live_balances() -> dict:
+    global _balance_cache, _balance_cache_ts
+    if time.time() - _balance_cache_ts < _BALANCE_TTL:
+        return _balance_cache
+    _balance_cache = {
+        "alpaca": _fetch_alpaca_balance(),
+        "ibkr":   _fetch_ibkr_balance(),
+    }
+    _balance_cache_ts = time.time()
+    return _balance_cache
+
+
 def _read_env_mode(directory: Path) -> str:
     """Read PAPER_TRADING from agent's .env file. Returns 'LIVE' or 'PAPER'."""
     try:
@@ -227,8 +304,11 @@ def _agent_status() -> dict:
                 s["mode"] = "LIVE"
             elif "[PAPER]" in head:
                 s["mode"] = "PAPER"
-            # Portfolio balance
+            # Portfolio balance — today's lines only to avoid stale log
+            today_str = date.today().isoformat()
             for l in reversed(lines):
+                if today_str not in l:
+                    continue
                 if "Portfolio" in l and "$" in l:
                     try:
                         s["portfolio"] = l.split("$")[1].split()[0].replace(",", "")
@@ -254,6 +334,14 @@ def _agent_status() -> dict:
             except Exception:
                 pass
         agents[name] = s
+
+    # Override portfolio with live API balance (cached 60s)
+    balances = _live_balances()
+    for name in agents:
+        live_bal = balances.get(name, "")
+        if live_bal:
+            agents[name]["portfolio"] = live_bal
+
     return agents
 
 
