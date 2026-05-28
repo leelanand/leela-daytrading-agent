@@ -65,7 +65,7 @@ DB_PATH = Path(__file__).parent / "daytrades.db"
 
 # ── Market Regime ──────────────────────────────────────────────────────────────
 REGIME_CACHE_MINS            = 15   # re-detect every 15 min
-EARLY_SESSION_GRACE_MINS     = 45   # skip vol-based NO_TRADE in first 45 min after open (9:30-10:15 ET)
+EARLY_SESSION_GRACE_MINS     = 10   # TOD-normalized baseline handles early session; 10 min covers opening auction only
 SPY_TREND_DAYS     = 3           # rolling days for SPY trend calculation
 TRADEABLE_REGIMES  = ["TRENDING_UP", "CHOPPY", "LOW_VOLUME", "HIGH_VOL"]
 # TRENDING_DOWN is blocked; LOW_VOLUME and HIGH_VOL both trigger REDUCED_RISK mode
