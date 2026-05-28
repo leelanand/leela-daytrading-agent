@@ -193,10 +193,23 @@ def _ibkr_log_tail() -> list[str]:
         return []
 
 
+def _read_env_mode(directory: Path) -> str:
+    """Read PAPER_TRADING from agent's .env file. Returns 'LIVE' or 'PAPER'."""
+    try:
+        for line in (directory / ".env").read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line.startswith("PAPER_TRADING"):
+                val = line.split("=", 1)[-1].strip().lower()
+                return "PAPER" if val in ("true", "1", "yes") else "LIVE"
+    except Exception:
+        pass
+    return "PAPER"
+
+
 def _agent_status() -> dict:
     agents = {}
     for name, d in [("alpaca", ALPACA_DIR), ("ibkr", IBKR_DIR)]:
-        s = {"running": False, "mode": "PAPER", "regime": "—", "regime_note": "",
+        s = {"running": False, "mode": _read_env_mode(d), "regime": "—", "regime_note": "",
              "portfolio": "", "pnl": 0.0, "last_ts": ""}
         log_path = d / "trading_day.log"
         if log_path.exists():
@@ -208,9 +221,12 @@ def _agent_status() -> dict:
                 if l.startswith("[20"):
                     s["last_ts"] = l[1:17]
                     break
-            # Mode badge
+            # Override mode from log if agent is actively running
             head = "\n".join(lines[:30])
-            s["mode"] = "LIVE" if "[LIVE]" in head else "PAPER"
+            if "[LIVE]" in head:
+                s["mode"] = "LIVE"
+            elif "[PAPER]" in head:
+                s["mode"] = "PAPER"
             # Portfolio balance
             for l in reversed(lines):
                 if "Portfolio" in l and "$" in l:
