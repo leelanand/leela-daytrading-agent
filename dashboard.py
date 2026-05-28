@@ -18,6 +18,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from zoneinfo import ZoneInfo
 
+from bpm import collect_bpm
+
 BST  = ZoneInfo("Europe/London")
 ET   = ZoneInfo("America/New_York")
 PORT = 8765
@@ -697,6 +699,41 @@ HTML = r"""<!DOCTYPE html>
   .feed-err    { color:#f85149; }
   .feed-row    { display:flex; justify-content:space-between; padding:4px 0; border-top:1px solid #21262d; font-size:12px; }
   .feed-row:first-of-type { border-top:none; }
+  /* ── BPM ── */
+  .tab-bar { display:flex; gap:0; margin-bottom:16px; border-bottom:1px solid #30363d; }
+  .tab-btn { padding:7px 20px; cursor:pointer; background:none; border:none; color:#8b949e; font-family:inherit; font-size:13px; border-bottom:2px solid transparent; margin-bottom:-1px; letter-spacing:.3px; }
+  .tab-btn.active { color:#58a6ff; border-bottom-color:#58a6ff; }
+  .tab-btn:hover:not(.active) { color:#e6edf3; }
+  .bpm-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .bpm-full { grid-column:1/-1; }
+  .bpm-card { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:12px; }
+  .bpm-card h3 { font-size:12px; color:#8b949e; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px; border-bottom:1px solid #21262d; padding-bottom:5px; display:flex; justify-content:space-between; align-items:center; }
+  .bpm-row { display:flex; justify-content:space-between; padding:3px 0; border-top:1px solid #21262d; font-size:12px; }
+  .bpm-row:first-of-type { border-top:none; }
+  .bpm-key { color:#8b949e; }
+  .stt-ok       { color:#3fb950; font-weight:bold; }
+  .stt-degraded { color:#d29922; font-weight:bold; }
+  .stt-critical { color:#f85149; font-weight:bold; }
+  .stt-missing  { color:#f85149; }
+  .stt-unknown  { color:#484f58; }
+  .stt-no_trades { color:#8b949e; }
+  .alert-CRITICAL { background:#2d1010; border-left:3px solid #f85149; padding:6px 10px; margin-bottom:4px; border-radius:4px; font-size:12px; }
+  .alert-WARNING  { background:#2d2010; border-left:3px solid #d29922; padding:6px 10px; margin-bottom:4px; border-radius:4px; font-size:12px; }
+  .alert-INFO     { background:#0d1a2d; border-left:3px solid #58a6ff; padding:6px 10px; margin-bottom:4px; border-radius:4px; font-size:12px; }
+  .alert-cat { font-size:10px; color:#8b949e; text-transform:uppercase; margin-right:8px; }
+  .kpi-bar { display:flex; flex-wrap:wrap; gap:24px; padding:4px 0; }
+  .kpi-item { display:flex; flex-direction:column; align-items:center; min-width:70px; }
+  .kpi-val  { font-size:20px; font-weight:bold; }
+  .kpi-label { font-size:10px; color:#8b949e; text-transform:uppercase; margin-top:2px; text-align:center; }
+  .why-reason { padding:5px 0; border-top:1px solid #21262d; font-size:12px; }
+  .why-reason:first-child { border-top:none; }
+  .why-cat { font-size:10px; color:#8b949e; text-transform:uppercase; margin-right:8px; display:inline-block; min-width:75px; }
+  .mover-traded   { color:#3fb950; }
+  .mover-missed   { color:#f85149; }
+  .mover-rejected { color:#d29922; }
+  .mover-scored   { color:#8b949e; }
+  .regime-chip { background:#1c2128; border:1px solid #30363d; border-radius:10px; padding:2px 8px; font-size:11px; display:inline-block; margin:2px; }
+  .bpm-ts { font-size:10px; color:#484f58; margin-top:6px; }
 </style>
 </head>
 <body>
@@ -711,6 +748,13 @@ HTML = r"""<!DOCTYPE html>
     <div class="refresh-info">Last update: <span id="last-refresh">—</span></div>
   </div>
 </div>
+
+<div class="tab-bar">
+  <button class="tab-btn active" id="tab-btn-status" onclick="switchTab('status')">Status</button>
+  <button class="tab-btn" id="tab-btn-bpm" onclick="switchTab('bpm')">Business Process Monitor</button>
+</div>
+
+<div id="tab-status">
 
 <div class="card" style="margin-bottom:16px">
   <h2>Agent Status</h2>
@@ -787,6 +831,101 @@ HTML = r"""<!DOCTYPE html>
   </div>
 
 </div>
+</div><!-- end tab-status -->
+
+<div id="tab-bpm" style="display:none">
+
+  <!-- Alerts bar -->
+  <div class="bpm-card bpm-full" style="margin-bottom:12px" id="bpm-alerts-card">
+    <h3>Active Alerts <span id="bpm-alert-count" style="font-size:11px;color:#484f58;font-weight:normal"></span></h3>
+    <div id="bpm-alerts"><span style="color:#484f58">Loading...</span></div>
+  </div>
+
+  <!-- Why Not Trading -->
+  <div class="bpm-card" style="margin-bottom:12px" id="bpm-why-card">
+    <h3>Why Not Trading? <span id="bpm-why-regime" style="font-size:11px;font-weight:normal;color:#8b949e"></span></h3>
+    <div id="bpm-why"></div>
+  </div>
+
+  <!-- KPIs -->
+  <div class="bpm-card" style="margin-bottom:12px">
+    <h3>Business KPIs — Today</h3>
+    <div class="kpi-bar" id="bpm-kpis"></div>
+  </div>
+
+  <div class="bpm-grid">
+
+    <!-- Research -->
+    <div class="bpm-card">
+      <h3>Research Pipeline <span id="bpm-research-status"></span></h3>
+      <div id="bpm-research"></div>
+    </div>
+
+    <!-- Scan -->
+    <div class="bpm-card">
+      <h3>Scan Pipeline <span id="bpm-scan-status"></span></h3>
+      <div id="bpm-scan"></div>
+    </div>
+
+    <!-- Scoring -->
+    <div class="bpm-card">
+      <h3>Scoring Engine <span id="bpm-scoring-status"></span></h3>
+      <div id="bpm-scoring"></div>
+    </div>
+
+    <!-- Market Data -->
+    <div class="bpm-card">
+      <h3>Market Data <span id="bpm-data-status"></span></h3>
+      <div id="bpm-data"></div>
+    </div>
+
+    <!-- Regime -->
+    <div class="bpm-card">
+      <h3>Regime Engine <span id="bpm-regime-status"></span></h3>
+      <div id="bpm-regime"></div>
+    </div>
+
+    <!-- Execution -->
+    <div class="bpm-card">
+      <h3>Execution Pipeline <span id="bpm-exec-status"></span></h3>
+      <div id="bpm-exec"></div>
+    </div>
+
+    <!-- Risk & PDT -->
+    <div class="bpm-card">
+      <h3>Risk &amp; PDT <span id="bpm-risk-status"></span></h3>
+      <div id="bpm-risk"></div>
+    </div>
+
+    <!-- Agent Coordination -->
+    <div class="bpm-card">
+      <h3>Agent Coordination <span id="bpm-coord-status"></span></h3>
+      <div id="bpm-coord"></div>
+    </div>
+
+    <!-- Strategy -->
+    <div class="bpm-card">
+      <h3>Strategy Effectiveness</h3>
+      <div id="bpm-strategy"></div>
+    </div>
+
+    <!-- Integration -->
+    <div class="bpm-card">
+      <h3>Research &rarr; Scan Integration <span id="bpm-integ-status"></span></h3>
+      <div id="bpm-integ"></div>
+    </div>
+
+    <!-- Missed Opportunities -->
+    <div class="bpm-card bpm-full">
+      <h3>Missed Opportunity Report <span id="bpm-missed-ts" style="font-size:11px;font-weight:normal;color:#484f58"></span></h3>
+      <div id="bpm-missed"></div>
+    </div>
+
+  </div><!-- end bpm-grid -->
+
+  <div class="bpm-ts" id="bpm-generated-at"></div>
+
+</div><!-- end tab-bpm -->
 
 <script>
 let currentBSThhmm = 0;
@@ -1072,6 +1211,284 @@ setInterval(tickClock, 1000);
 tickClock();
 refresh();
 setInterval(refresh, 30000);
+
+// ── Tab switching ──────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.getElementById('tab-status').style.display = name === 'status' ? '' : 'none';
+  document.getElementById('tab-bpm').style.display    = name === 'bpm'    ? '' : 'none';
+  document.getElementById('tab-btn-status').className = 'tab-btn' + (name === 'status' ? ' active' : '');
+  document.getElementById('tab-btn-bpm').className    = 'tab-btn' + (name === 'bpm'    ? ' active' : '');
+  if (name === 'bpm') refreshBpm();
+}
+
+// ── BPM helpers ───────────────────────────────────────────────────────────
+function sttBadge(s) {
+  if (!s) return '';
+  const cls = 'stt-' + s;
+  const labels = {ok:'✓ OK', degraded:'⚠ Degraded', critical:'✗ Critical',
+                  missing:'✗ Missing', unknown:'— Unknown', no_trades:'No Trades',
+                  too_early:'Too Early'};
+  return `<span class="${cls}">${labels[s] || s}</span>`;
+}
+
+function bpmRow(label, value, cls) {
+  return `<div class="bpm-row"><span class="bpm-key">${label}</span><span class="${cls||''}">${value}</span></div>`;
+}
+
+function na(v, suffix) {
+  if (v == null) return '<span style="color:#484f58">—</span>';
+  return (suffix ? v + suffix : v);
+}
+
+function pctFmt(v) {
+  if (v == null) return '<span style="color:#484f58">—</span>';
+  const cls = v > 0 ? 'pnl-pos' : v < 0 ? 'pnl-neg' : 'pnl-zero';
+  return `<span class="${cls}">${v >= 0 ? '+' : ''}${v.toFixed(1)}%</span>`;
+}
+
+// ── BPM render ────────────────────────────────────────────────────────────
+function renderBpm(d) {
+  document.getElementById('bpm-generated-at').textContent = 'Last updated: ' + (d.generated_at || '—');
+
+  // Alerts
+  const alerts = d.alerts || [];
+  const alertDiv = document.getElementById('bpm-alerts');
+  document.getElementById('bpm-alert-count').textContent = alerts.length ? `(${alerts.length})` : '(none)';
+  if (!alerts.length) {
+    alertDiv.innerHTML = '<div style="color:#3fb950;font-size:12px">✓ No active alerts — all systems nominal</div>';
+  } else {
+    alertDiv.innerHTML = alerts.map(a =>
+      `<div class="alert-${a.severity}"><span class="alert-cat">${a.category}</span>${a.message} <span style="color:#484f58;font-size:10px;float:right">${a.ts}</span></div>`
+    ).join('');
+  }
+
+  // Why Not Trading
+  const why = d.why || {};
+  document.getElementById('bpm-why-regime').textContent = why.regime ? `[${why.regime}]` : '';
+  const whyDiv = document.getElementById('bpm-why');
+  const reasons = why.reasons || [];
+  if (!reasons.length) {
+    whyDiv.innerHTML = '<div style="color:#484f58">No blocking reasons — system ready</div>';
+  } else {
+    const SEV_CLR = {CRITICAL:'#f85149', WARNING:'#d29922', INFO:'#8b949e'};
+    whyDiv.innerHTML = reasons.map(r =>
+      `<div class="why-reason"><span class="why-cat">${r.category}</span><span style="color:${SEV_CLR[r.severity]||'#e6edf3'}">${r.message}</span></div>`
+    ).join('');
+  }
+  const tradeable = why.tradeable_candidates || 0;
+  const inWindow  = why.in_trading_window;
+  whyDiv.innerHTML += `<div style="margin-top:6px;font-size:11px;color:#484f58">
+    Window: <span style="color:${inWindow?'#3fb950':'#8b949e'}">${inWindow?'ACTIVE':'INACTIVE'}</span>
+    &nbsp;|&nbsp; Tradeable candidates: <span style="color:${tradeable>0?'#58a6ff':'#8b949e'}">${tradeable}</span>
+  </div>`;
+
+  // KPIs
+  const kpis = d.kpis || {};
+  const kpiDefs = [
+    {k:'scans_today',          label:'Scans',         fmt: v => na(v)},
+    {k:'candidates_scored',    label:'Scored',        fmt: v => na(v)},
+    {k:'candidates_rejected',  label:'Rejected',      fmt: v => na(v)},
+    {k:'orders_placed',        label:'Orders',        fmt: v => `<span class="${v>0?'active':'pending'}">${na(v)}</span>`},
+    {k:'fills_confirmed',      label:'Fills',         fmt: v => `<span class="${v>0?'done':'pending'}">${na(v)}</span>`},
+    {k:'missed_movers',        label:'Missed Movers', fmt: v => `<span class="${v>0?'warn':'done'}">${na(v)}</span>`},
+    {k:'win_rate',             label:'Win Rate',      fmt: v => v!=null ? `<span class="${v>=50?'pnl-pos':'pnl-neg'}">${v.toFixed(0)}%</span>` : na(null)},
+    {k:'expectancy',           label:'Expectancy',    fmt: v => v!=null ? `<span class="${v>=0?'pnl-pos':'pnl-neg'}">$${v>=0?'+':''}${v.toFixed(2)}</span>` : na(null)},
+    {k:'data_confidence',      label:'Data Conf',     fmt: v => `<span class="${v>=80?'done':v>=60?'warn':'pnl-neg'}">${na(v,'%')}</span>`},
+  ];
+  document.getElementById('bpm-kpis').innerHTML = kpiDefs.map(def => {
+    const val = kpis[def.k];
+    return `<div class="kpi-item"><div class="kpi-val">${def.fmt(val)}</div><div class="kpi-label">${def.label}</div></div>`;
+  }).join('');
+
+  // Research
+  const res = d.research || {};
+  document.getElementById('bpm-research-status').innerHTML = sttBadge(res.status);
+  document.getElementById('bpm-research').innerHTML = [
+    bpmRow('Ran today', res.ran_today ? '<span class="done">Yes</span>' : '<span class="warn">No</span>'),
+    bpmRow('Generated at', na(res.generated_at ? res.generated_at.substring(11) : null)),
+    bpmRow('Cache age', res.cache_age_mins != null ? `${res.cache_age_mins} min` : '—'),
+    bpmRow('Symbols', na(res.symbols_researched)),
+    bpmRow('Bias', res.ran_today ? `<span class="done">${res.bullish}↑</span> <span class="pnl-neg">${res.bearish}↓</span> <span class="pending">${res.avoid} avoid</span>` : '—'),
+    bpmRow('Consumed by prescan', res.research_consumed ? '<span class="done">Yes</span>' : '<span class="warn">No</span>'),
+    ...(res.score_distribution && res.score_distribution.avg ? [bpmRow('Avg research score', na(res.score_distribution.avg))] : []),
+  ].join('');
+
+  // Scan
+  const scan = d.scan || {};
+  document.getElementById('bpm-scan-status').innerHTML = sttBadge(scan.status);
+  const scanTl = (scan.scan_timeline || []).map(s => s.ts).join(' · ');
+  document.getElementById('bpm-scan').innerHTML = [
+    bpmRow('Prescan done', scan.prescan_done ? '<span class="done">Yes</span>' : scan.prescan_skipped ? '<span class="skip">Skipped</span>' : '<span class="warn">No</span>'),
+    bpmRow('Scans executed', `<span class="active">${na(scan.total_scans)}</span>`),
+    bpmRow('Scans skipped', scan.skipped_scans > 0 ? `<span class="warn">${scan.skipped_scans}</span>` : '0'),
+    bpmRow('Last scan', na(scan.last_scan_at ? scan.last_scan_at.substring(11) : null)),
+    bpmRow('Last scan age', scan.last_scan_age_mins != null ? `${scan.last_scan_age_mins} min` : '—'),
+    bpmRow('Pool', `${na(scan.tradeable_count)} tradeable + ${na(scan.watchlist_count)} watchlist`),
+    ...(scanTl ? [bpmRow('Timeline', `<span style="font-size:10px;color:#484f58">${scanTl}</span>`)] : []),
+  ].join('');
+
+  // Scoring
+  const sc = d.scoring || {};
+  document.getElementById('bpm-scoring-status').innerHTML = sttBadge(sc.status);
+  const topRej = Object.entries(sc.top_rejection_reasons || {}).slice(0,3).map(([k,v]) => `${k}(${v})`).join(', ') || '—';
+  document.getElementById('bpm-scoring').innerHTML = [
+    bpmRow('Candidates seen', na(sc.candidates_seen)),
+    bpmRow('Sent to Claude', `<span class="active">${na(sc.sent_to_claude)}</span>`),
+    bpmRow('Cache hits', `<span class="done">${na(sc.cache_hits)}</span>`),
+    bpmRow('Local rejects', `<span class="pending">${na(sc.local_rejects)}</span>`),
+    bpmRow('Cache hit rate', na(sc.cache_hit_rate_pct, '%')),
+    bpmRow('Claude decision changes', na(sc.decision_change_rate_pct, '%')),
+    bpmRow('Top rejections', `<span style="font-size:10px;color:#8b949e">${topRej}</span>`),
+  ].join('');
+
+  // Market Data
+  const dt = d.data || {};
+  document.getElementById('bpm-data-status').innerHTML = sttBadge(dt.status);
+  const connCls = dt.ibkr_connected ? 'done' : 'pnl-neg';
+  const mdtLabel = {1:'Live real-time', 2:'Frozen', 3:'Delayed 15min', 4:'Delayed frozen'}[dt.market_data_type] || (dt.market_data_type ? String(dt.market_data_type) : '—');
+  const mdtCls   = dt.market_data_type == 1 ? 'done' : dt.market_data_type ? 'warn' : 'pending';
+  document.getElementById('bpm-data').innerHTML = [
+    bpmRow('IB Gateway', `<span class="${connCls}">${dt.ibkr_connected ? '● Connected' : '● Disconnected'}</span>`),
+    bpmRow('Data type', `<span class="${mdtCls}">${mdtLabel}</span>`),
+    bpmRow('Quote age', dt.quote_age_secs != null ? `${dt.quote_age_secs}s` : '—'),
+    bpmRow('Data confidence', `<span class="${dt.data_confidence_score>=80?'done':dt.data_confidence_score>=60?'warn':'pnl-neg'}">${na(dt.data_confidence_score,'%')}</span>`),
+    bpmRow('Stale events', dt.stale_quote_events > 0 ? `<span class="warn">${dt.stale_quote_events}</span>` : '0'),
+    bpmRow('Spike events', dt.price_spike_events > 0 ? `<span class="warn">${dt.price_spike_events}</span>` : '0'),
+    bpmRow('Trades rejected / data', dt.trades_rejected_data > 0 ? `<span class="pnl-neg">${dt.trades_rejected_data}</span>` : '0'),
+  ].join('');
+
+  // Regime
+  const reg = d.regime || {};
+  document.getElementById('bpm-regime-status').innerHTML = sttBadge(reg.status);
+  const regClr = reg.current === 'TRENDING_UP' ? '#3fb950' : reg.current === 'NO_TRADE' ? '#f85149' : reg.current === 'CHOPPY' || reg.current === 'LOW_VOLUME' ? '#d29922' : '#8b949e';
+  const hist   = (reg.regime_history || []).map(r => `<span class="regime-chip" style="color:${r.regime==='TRENDING_UP'?'#3fb950':r.regime==='NO_TRADE'?'#f85149':'#d29922'}">${r.ts} ${r.regime}</span>`).join('');
+  document.getElementById('bpm-regime').innerHTML = [
+    bpmRow('Current', `<strong style="color:${regClr}">${reg.current || '—'}</strong>`),
+    bpmRow('Reason', `<span style="color:#8b949e;font-size:11px">${(reg.reason||'—').substring(0,70)}</span>`),
+    bpmRow('Vol ratio', na(reg.effective_vol)),
+    bpmRow('VIX', na(reg.vix)),
+    bpmRow('Transitions today', na(reg.transitions_today)),
+    ...(hist ? [bpmRow('History', `<div style="margin-top:2px">${hist}</div>`)] : []),
+  ].join('');
+
+  // Execution
+  const ex = d.execution || {};
+  document.getElementById('bpm-exec-status').innerHTML = sttBadge(ex.status);
+  document.getElementById('bpm-exec').innerHTML = [
+    bpmRow('Orders today', `<span class="${ex.orders_today>0?'active':'pending'}">${na(ex.orders_today)}</span>`),
+    bpmRow('Fills confirmed', `<span class="${ex.fills_today>0?'done':'pending'}">${na(ex.fills_today)}</span>`),
+    bpmRow('Rejected', ex.rejected_today > 0 ? `<span class="warn">${ex.rejected_today}</span>` : '0'),
+    bpmRow('Avg slippage', ex.avg_slippage_pct != null ? `${ex.avg_slippage_pct}%` : '—'),
+    bpmRow('Force closed', ex.force_closed ? '<span class="done">Yes</span>' : '<span class="pending">Not yet</span>'),
+    bpmRow('Verified flat', ex.verified_flat ? '<span class="done">Yes</span>' : '<span class="pending">Not yet</span>'),
+  ].join('');
+
+  // Risk
+  const risk = d.risk || {};
+  document.getElementById('bpm-risk-status').innerHTML = sttBadge(risk.status);
+  const pdtVal = risk.pdt_remaining === -1 ? '<span class="done">Unlimited</span>' :
+                 risk.pdt_remaining === 0   ? '<span class="pnl-neg">0 — Exhausted</span>' :
+                 risk.pdt_remaining <= 1    ? `<span class="warn">${risk.pdt_remaining}</span>` :
+                                              `<span class="done">${risk.pdt_remaining}</span>`;
+  document.getElementById('bpm-risk').innerHTML = [
+    bpmRow('Trades today', na(risk.trades_today)),
+    bpmRow('PDT remaining', pdtVal),
+    bpmRow('Loss limit hit', risk.loss_limit_hit ? '<span class="pnl-neg">YES — BLOCKED</span>' : '<span class="done">No</span>'),
+  ].join('');
+
+  // Coordination
+  const co = d.coordination || {};
+  document.getElementById('bpm-coord-status').innerHTML = sttBadge(co.status);
+  const dupes = (co.duplicate_trades || []).join(', ') || 'None';
+  document.getElementById('bpm-coord').innerHTML = [
+    bpmRow('Alpaca agent', co.alpaca_alive ? '<span class="done">● Running</span>' : '<span class="pnl-neg">● Stale</span>'),
+    bpmRow('IBKR agent', co.ibkr_alive ? '<span class="done">● Running</span>' : '<span class="pnl-neg">● Stale</span>'),
+    bpmRow('Alpaca trades', na(co.alpaca_trades)),
+    bpmRow('IBKR trades', na(co.ibkr_trades)),
+    bpmRow('Duplicate trades', dupes !== 'None' ? `<span class="pnl-neg">${dupes}</span>` : '<span class="done">None</span>'),
+    ...(co.alpaca_shortlist && co.alpaca_shortlist.length ? [bpmRow('Alpaca shortlist', co.alpaca_shortlist.join(', '))] : []),
+    ...(co.ibkr_shortlist && co.ibkr_shortlist.length ? [bpmRow('IBKR shortlist', co.ibkr_shortlist.join(', '))] : []),
+  ].join('');
+
+  // Strategy
+  const st = d.strategy || {};
+  if (st.status === 'no_trades') {
+    document.getElementById('bpm-strategy').innerHTML = '<div style="color:#484f58">No trades today — check back after first trade.</div>';
+  } else {
+    const rr = st.profit_factor && st.avg_loss ? `${(Math.abs(st.avg_win||0) / Math.abs(st.avg_loss||1)).toFixed(1)}:1` : '—';
+    document.getElementById('bpm-strategy').innerHTML = [
+      bpmRow('Trades', na(st.trades)),
+      bpmRow('Win rate', st.win_rate != null ? `<span class="${st.win_rate>=50?'done':'pnl-neg'}">${st.win_rate.toFixed(0)}%</span>` : '—'),
+      bpmRow('Expectancy', st.expectancy != null ? `<span class="${st.expectancy>=0?'pnl-pos':'pnl-neg'}">$${st.expectancy>=0?'+':''}${st.expectancy.toFixed(2)}</span>` : '—'),
+      bpmRow('Profit factor', st.profit_factor != null ? `<span class="${st.profit_factor>=1?'done':'pnl-neg'}">${st.profit_factor.toFixed(2)}</span>` : '—'),
+      bpmRow('Avg win / loss', (st.avg_win != null && st.avg_loss != null) ? `$${(st.avg_win||0).toFixed(2)} / $${(st.avg_loss||0).toFixed(2)}` : '—'),
+      bpmRow('Avg slippage', na(st.avg_slippage, ' pts')),
+      ...(st.rolling_10d && st.rolling_10d.win_rate ? [bpmRow('10d win rate', `${st.rolling_10d.win_rate.toFixed(0)}%`)] : []),
+    ].join('');
+  }
+
+  // Integration
+  const integ = d.integration || {};
+  document.getElementById('bpm-integ-status').innerHTML = sttBadge(integ.status);
+  const missing = (integ.missing_research || []).join(', ') || 'None';
+  document.getElementById('bpm-integ').innerHTML = [
+    bpmRow('With research', na(integ.candidates_with_research)),
+    bpmRow('Without research', integ.candidates_without_research > 0 ? `<span class="warn">${integ.candidates_without_research}</span>` : '0'),
+    bpmRow('Coverage', na(integ.coverage_pct, '%')),
+    ...(integ.candidates_without_research > 0 ? [bpmRow('Missing', `<span style="color:#d29922;font-size:11px">${missing}</span>`)] : []),
+  ].join('');
+
+  // Missed opportunities
+  const ms = d.missed || {};
+  document.getElementById('bpm-missed-ts').textContent = ms.generated_at ? `as of ${ms.generated_at}` : '';
+  const moversDiv = document.getElementById('bpm-missed');
+  if (ms.status === 'too_early') {
+    moversDiv.innerHTML = '<span style="color:#484f58">Available after 10:30 ET — checking intraday movers.</span>';
+  } else {
+    const movers = ms.movers || [];
+    if (!movers.length) {
+      moversDiv.innerHTML = '<span style="color:#484f58">No significant movers detected in scanned universe.</span>';
+    } else {
+      const STATUS_LABELS = {
+        traded: 'Traded', missed_entirely: 'Missed', rejected: 'Rejected',
+        scored_not_traded: 'Scored/Not traded', scanned_not_scored: 'Scanned/Not scored',
+      };
+      const STATUS_CLS = {
+        traded: 'mover-traded', missed_entirely: 'mover-missed',
+        rejected: 'mover-rejected', scored_not_traded: 'mover-scored',
+        scanned_not_scored: 'mover-scored',
+      };
+      moversDiv.innerHTML = `<table style="width:100%"><tr>
+        <th>Symbol</th><th>Move</th><th>High</th><th>Price</th><th>Status</th><th>Reason</th>
+      </tr>` + movers.map(m => `<tr>
+        <td class="log-sym">${m.symbol}</td>
+        <td class="${m.move_pct>=0?'pnl-pos':'pnl-neg'}">${m.move_pct>=0?'+':''}${m.move_pct.toFixed(1)}%</td>
+        <td class="pnl-pos">+${m.high_pct.toFixed(1)}%</td>
+        <td style="color:#8b949e">$${m.price}</td>
+        <td class="${STATUS_CLS[m.status]||''}">${STATUS_LABELS[m.status]||m.status}</td>
+        <td style="color:#484f58;font-size:11px">${m.rejection_reason||'—'}</td>
+      </tr>`).join('') + '</table>' +
+      `<div style="margin-top:6px;font-size:11px;color:#8b949e">
+        Missed entirely: <span class="mover-missed">${ms.missed_count}</span> &nbsp;|&nbsp;
+        Rejected (not re-evaluated): <span class="mover-rejected">${ms.rejected_missed}</span> &nbsp;|&nbsp;
+        Universe checked: ${ms.universe_checked}
+      </div>`;
+    }
+  }
+}
+
+async function refreshBpm() {
+  try {
+    const r = await fetch('/api/bpm');
+    const data = await r.json();
+    renderBpm(data);
+  } catch(e) {
+    const alertDiv = document.getElementById('bpm-alerts');
+    if (alertDiv) alertDiv.innerHTML = '<div style="color:#f85149">BPM fetch error — retrying</div>';
+  }
+}
+
+setInterval(refreshBpm, 60000);
 </script>
 </body>
 </html>
@@ -1080,7 +1497,12 @@ setInterval(refresh, 30000);
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/api/status":
+        if self.path == "/api/bpm":
+            try:
+                self._serve_json(collect_bpm())
+            except Exception as e:
+                self._serve_json({"error": str(e)})
+        elif self.path == "/api/status":
             try:
                 data = _build_status()
                 body = json.dumps(data).encode()
@@ -1106,6 +1528,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass  # suppress access log noise
+
+    def _serve_json(self, data: dict):
+        body = json.dumps(data).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
