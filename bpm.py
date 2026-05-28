@@ -49,7 +49,8 @@ def _mins_ago(ts_str: str) -> float:
 
 def _read_json(path: Path) -> dict:
     try:
-        return json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        result = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        return result if isinstance(result, dict) else {}
     except Exception:
         return {}
 
@@ -957,19 +958,26 @@ def collect_bpm(force: bool = False) -> dict:
     mins   = now_et.hour * 60 + now_et.minute
     run_missed = mins >= 10 * 60 + 30 and now_et.weekday() < 5
 
-    research  = _research_pipeline()
-    scan      = _scan_pipeline()
-    integ     = _integration()
-    scoring   = _scoring_engine()
-    missed    = _missed_opportunities() if run_missed else {"status": "too_early", "movers": [], "missed_count": 0, "rejected_missed": 0}
-    execution = _execution_pipeline()
-    data      = _market_data()
-    regime    = _regime_engine()
-    risk      = _risk_pdt()
-    coord     = _coordination()
-    strategy  = _strategy()
-    why       = _why_not_trading(scan, regime, risk, data)
-    kpis      = _kpis(scan, scoring, execution, strategy, data, missed)
+    def _safe(fn, fallback=None):
+        try:
+            return fn()
+        except Exception as exc:
+            return fallback if fallback is not None else {"status": "error", "error": str(exc), "issues": [f"CRITICAL: BPM section crashed: {exc}"]}
+
+    research  = _safe(_research_pipeline)
+    scan      = _safe(_scan_pipeline)
+    integ     = _safe(_integration)
+    scoring   = _safe(_scoring_engine)
+    missed    = (_safe(_missed_opportunities) if run_missed
+                 else {"status": "too_early", "movers": [], "missed_count": 0, "rejected_missed": 0})
+    execution = _safe(_execution_pipeline)
+    data      = _safe(_market_data)
+    regime    = _safe(_regime_engine)
+    risk      = _safe(_risk_pdt)
+    coord     = _safe(_coordination)
+    strategy  = _safe(_strategy)
+    why       = _safe(lambda: _why_not_trading(scan, regime, risk, data))
+    kpis      = _safe(lambda: _kpis(scan, scoring, execution, strategy, data, missed))
 
     bpm = {
         "generated_at": now_et.strftime("%H:%M:%S ET"),
@@ -987,7 +995,7 @@ def collect_bpm(force: bool = False) -> dict:
         "why":          why,
         "kpis":         kpis,
     }
-    bpm["alerts"] = _alerts(bpm)
+    bpm["alerts"] = _safe(lambda: _alerts(bpm), fallback=[])
 
     _bpm_cache    = bpm
     _bpm_cache_ts = time.time()
