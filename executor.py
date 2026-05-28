@@ -1,4 +1,5 @@
 """Place and close orders on Alpaca. Logs execution quality for slippage tracking."""
+import math
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     LimitOrderRequest, MarketOrderRequest,
@@ -8,8 +9,40 @@ from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
 from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, PAPER_TRADING,
     STOP_LOSS_PCT, TAKE_PROFIT_PCT, USE_LIMIT_ORDERS, LIMIT_OFFSET_PCT,
+    MAX_SPREAD_PCT,
 )
 from logger import log_execution
+
+
+def _validate_prices(symbol: str, entry: float, bid: float, ask: float,
+                     stop: float, take_profit: float, quantity: int) -> tuple[bool, str]:
+    """
+    Reject any order where a critical price field is NaN, None, zero,
+    negative, or non-finite. Must be called before any broker object is created.
+    """
+    fields = {
+        "entry": entry, "bid": bid, "ask": ask,
+        "stop": stop, "take_profit": take_profit, "quantity": quantity,
+    }
+    for name, val in fields.items():
+        if val is None:
+            return False, f"price_guard: {name} is None for {symbol}"
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            return False, f"price_guard: {name}={val!r} not numeric for {symbol}"
+        if not math.isfinite(v):
+            return False, f"price_guard: {name}={val} is non-finite (NaN/Inf) for {symbol}"
+        if v <= 0:
+            return False, f"price_guard: {name}={val} is zero or negative for {symbol}"
+    spread_pct = (ask - bid) / entry * 100
+    if spread_pct > MAX_SPREAD_PCT:
+        return False, f"price_guard: spread={spread_pct:.3f}% > MAX_SPREAD_PCT={MAX_SPREAD_PCT} for {symbol}"
+    if stop >= entry:
+        return False, f"price_guard: stop={stop} >= entry={entry} for {symbol}"
+    if take_profit <= entry:
+        return False, f"price_guard: take_profit={take_profit} <= entry={entry} for {symbol}"
+    return True, "ok"
 
 
 def _client() -> TradingClient:
@@ -26,6 +59,12 @@ def place_bracket_order(
     tp     = take_profit_pct if take_profit_pct is not None else TAKE_PROFIT_PCT
     stop   = round(price * (1 - sp), 2)
     target = round(price * (1 + tp), 2)
+    entry  = round(price * (1 + LIMIT_OFFSET_PCT), 2) if USE_LIMIT_ORDERS else round(price, 2)
+
+    # Safety guard — must pass before any broker object is created
+    ok, reason = _validate_prices(symbol, entry, entry * 0.999, entry * 1.001, stop, target, shares)
+    if not ok:
+        raise ValueError(reason)
 
     if USE_LIMIT_ORDERS:
         limit_price = round(price * (1 + LIMIT_OFFSET_PCT), 2)

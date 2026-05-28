@@ -69,12 +69,13 @@ def check_exits() -> list[str]:
             state["watermarks"][symbol] = current
             high = current
 
-        # 1. Trailing stop (activates only after enough gain)
-        if unreal_pct >= TRAILING_STOP_TRIGGER_PCT:
+        # 1. Trailing stop — arms when HIGH watermark reached trigger, not current P&L
+        high_pct = (high - entry) / entry if entry > 0 else 0.0
+        if high_pct >= TRAILING_STOP_TRIGGER_PCT:
             trail = high * (1 - TRAILING_STOP_DISTANCE_PCT)
             if current <= trail:
                 reason = (f"trailing_stop: ${current:.2f} ≤ trail ${trail:.2f} "
-                          f"(peak ${high:.2f}, was +{unreal_pct:.1%})")
+                          f"(peak ${high:.2f}, +{high_pct:.1%})")
 
         # 2. Momentum flip — peaked then fell back below entry
         if not reason and high > entry * 1.01:   # was up at least 1%
