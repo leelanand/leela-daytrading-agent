@@ -1325,19 +1325,26 @@ def _scan_and_trade(paper_mode: bool = False):
     # Pre-warm WS cache with a burst streaming session for candidate symbols
     # before entering the per-symbol loop (non-blocking if no key configured)
     _candidate_symbols = [
-        c["symbol"] for c in (prescan or []) if c.get("tradeable")
+        c["symbol"] for c in (prescan or []) if c.get("tradeable") or c.get("watchlist")
     ]
     if _candidate_symbols and active_providers():
         print(f"   Streaming quotes for {len(_candidate_symbols)} candidate(s) "
               f"({active_providers()[0]})...")
         stream_quotes_burst(_candidate_symbols)
     if prescan:
-        candidates = [c for c in prescan if c.get("tradeable") and c["symbol"] not in held]
+        # Include watchlist candidates in rescore — they may have strengthened since prescan
+        candidates = [c for c in prescan
+                      if (c.get("tradeable") or c.get("watchlist")) and c["symbol"] not in held]
         if not candidates:
-            print("   No tradeable prescan candidates available.")
+            print("   No tradeable or watchlist prescan candidates available.")
             return
+        n_pre_tradeable = sum(1 for c in candidates if c.get("tradeable"))
+        n_pre_watchlist = sum(1 for c in candidates if c.get("watchlist") and not c.get("tradeable"))
+        label = f"{n_pre_tradeable} tradeable"
+        if n_pre_watchlist:
+            label += f" + {n_pre_watchlist} watchlist (rescoring for upgrade)"
         # Re-score with live data to drop any candidates that have faded since prescan
-        print(f"   Re-scoring {len(candidates)} prescan candidate(s) with live data...")
+        print(f"   Re-scoring {label}...")
         candidates = analyse_candidates(candidates)
 
         # Apply confidence decay based on candidate age then re-check thresholds

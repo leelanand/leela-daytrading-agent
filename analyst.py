@@ -47,6 +47,7 @@ Score each candidate 0-100 using these weighted components:
 
 Key rules:
 - BELOW-VWAP entries are lower quality — reduce market_trend_score and liquidity_score slightly
+- bvwap=null means VWAP data unavailable — do NOT penalise for VWAP position; omit VWAP reasoning
 - FALLING volume trend (vol_trend_ratio < 1) is a red flag — reduce volume_score
 - If sector ETF is down, reduce market_trend_score for stocks in that sector
 - VIX > 25: reduce all size expectations
@@ -54,6 +55,8 @@ Key rules:
 - Earnings within 1d is already blocked upstream; if within 3d in warns, reduce news_score
 - Economic events (FOMC, CPI, NFP): reduce market_trend_score for all candidates
 - news.impact >= 60 is strong catalyst; < 30 is weak; weight news_score accordingly
+- gap >= 20%: the gap itself is the primary catalyst — floor news_score at 8 regardless of impact_score
+- gap >= 10% with rvol >= 2.0: institutional reaction confirmed — momentum_score floor 18
 - pre_market_bias AVOID: hard-cap total score at 50
 - pre_market_bias BEARISH: reduce market_trend_score by up to 5
 - pre_market_bias BULLISH: add up to 5 to market_trend_score if fundamentals support
@@ -361,7 +364,8 @@ def _call_claude(
             "vtrend": c.get("vol_trend_ratio", 1.0),
             "vol_k":  round(c.get("today_volume", 0) / 1000),
             "spread": c.get("spread_pct", 0),
-            "bvwap":  c.get("below_vwap", False),
+            # bvwap is only reliable when VWAP data is available (vwap > 0)
+            "bvwap":  c.get("below_vwap", False) if c.get("vwap", 0) > 0 else None,
             "etf":    SECTOR_ETFS.get(c.get("sector", ""), ""),
             "news":   [{"h": n["headline"][:80], "imp": n["impact"],
                         "sent": n["sentiment"], "age": n["age_mins"]} for n in tn],
