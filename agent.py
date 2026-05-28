@@ -123,6 +123,34 @@ _last_gapper_refresh_et: datetime | None = None
 
 # ── Mode helpers ──────────────────────────────────────────────────────────────
 
+def _print_vol_diagnostics() -> None:
+    """Print time-of-day normalized volume diagnostics after each regime detection."""
+    try:
+        ctx   = get_regime_context()
+        spy_r = ctx.get("spy_intraday_ratio")
+        if spy_r is None:
+            return  # old cache format — skip
+        qqq_r = ctx.get("qqq_intraday_ratio", 0)
+        iwm_r = ctx.get("iwm_intraday_ratio", 0)
+        eff_r = ctx.get("effective_vol_ratio", spy_r)
+        mins  = ctx.get("mins_since_open", "?")
+        tv    = ctx.get("spy_today_vol", 0)
+        ev    = ctx.get("spy_expected_vol", 0)
+        n     = ctx.get("spy_baseline_samples", 0)
+        wd_n  = ctx.get("spy_same_wd_n", 0)
+        note  = ctx.get("ratio_note", "")
+        print(
+            f"   [VOL] SPY={spy_r:.0%}  QQQ={qqq_r:.0%}  IWM={iwm_r:.0%}  "
+            f"effective={eff_r:.0%}  @{mins}min  "
+            f"today={tv:,} vs expected={ev:,}  "
+            f"baseline={n} sessions ({wd_n} same-wd)"
+        )
+        if note:
+            print(f"          {note}")
+    except Exception:
+        pass
+
+
 def _reject(symbol: str, score: int, setup_type: str, stage: str, rule: str,
             observed=None, threshold=None, is_experimental: bool = False):
     """Log a precise trade rejection with stage/rule/observed/threshold details."""
@@ -1036,6 +1064,7 @@ def _prescan():
     # Regime check
     regime, regime_reason = detect_regime()
     print(f"   Regime : {regime} — {regime_reason}")
+    _print_vol_diagnostics()
     log_audit("REGIME_DETECTED", details={"regime": regime, "reason": regime_reason})
 
     if not is_tradeable(regime):
@@ -1062,9 +1091,12 @@ def _prescan():
         print(f"     score >= {_lv_score_label} ({'live' if TRADING_MODE == 'LIVE' else 'paper'})  "
               f"|  stock RVOL >= {LOW_VOLUME_STOCK_RVOL}x  "
               f"|  max {LOW_VOLUME_MAX_TRADES} trade(s)  |  size -50%")
-        print(f"     vix={ctx.get('vix','?')}  vol_10d={ctx.get('vol_ratio_10d','?')}  "
-              f"vol_weekday={ctx.get('vol_ratio_weekday','?')}  "
-              f"baseline={ctx.get('vol_baseline','?')}")
+        print(f"     vix={ctx.get('vix','?')}  "
+              f"SPY={ctx.get('spy_intraday_ratio','?'):.0%}  "
+              f"QQQ={ctx.get('qqq_intraday_ratio','?'):.0%}  "
+              f"IWM={ctx.get('iwm_intraday_ratio','?'):.0%}  "
+              f"effective={ctx.get('effective_vol_ratio','?'):.0%}  "
+              f"baseline={ctx.get('spy_baseline_samples','?')} sessions")
         log_audit("LOW_VOLUME_MODE", details={
             "restrictions": {
                 "min_score":   _lv_score_log,
@@ -1199,6 +1231,7 @@ def _scan_and_trade(paper_mode: bool = False):
     # Regime check
     regime, regime_reason = detect_regime()
     print(f"   Regime  : {regime} — {regime_reason}")
+    _print_vol_diagnostics()
     no_trade_hypothetical = False
     if not is_tradeable(regime):
         if paper_mode or PAPER_TRADING:
@@ -1212,6 +1245,8 @@ def _scan_and_trade(paper_mode: bool = False):
 
     low_vol_mode  = (regime == LOW_VOLUME)
     high_vol_mode = (regime == HIGH_VOL)
+    lv_ctx        = get_regime_context()
+    hc_ok         = lv_ctx.get("high_conviction_ok", False)  # Item 8: RVOL>=3 override flag
     if TRADING_MODE == "LIVE":
         _lv_score_label = str(LIVE_LOW_VOLUME_MIN_SCORE)
         _lv_score_log   = LIVE_LOW_VOLUME_MIN_SCORE
@@ -1220,9 +1255,9 @@ def _scan_and_trade(paper_mode: bool = False):
                            f"{PAPER_LIVE_REALISTIC_LOW_VOLUME_MIN_SCORE}(real)")
         _lv_score_log   = PAPER_EXPLORATORY_LOW_VOLUME_MIN_SCORE
     if low_vol_mode:
-        ctx = get_regime_context()
         print(f"   [LOW_VOLUME] REDUCED_RISK: score>={_lv_score_label} ({'live' if TRADING_MODE == 'LIVE' else 'paper'})  "
-              f"RVOL>={LOW_VOLUME_STOCK_RVOL}x  max {LOW_VOLUME_MAX_TRADES} trade  size-50%")
+              f"RVOL>={LOW_VOLUME_STOCK_RVOL}x  max {LOW_VOLUME_MAX_TRADES} trade  size-50%"
+              + ("  [HC_OVERRIDE: RVOL>=3 setups bypass score gate]" if hc_ok else ""))
         log_audit("LOW_VOLUME_MODE", details={"restrictions": {
             "min_score":  _lv_score_log,
             "min_rvol":   LOW_VOLUME_STOCK_RVOL,
@@ -1453,10 +1488,23 @@ def _scan_and_trade(paper_mode: bool = False):
             continue
 
         # LOW_VOLUME confidence gate — strict for LIVE, two-tier for PAPER
-        # LIVE: reject below LIVE_LOW_VOLUME_MIN_SCORE (no exploratory relaxation)
-        # PAPER: reject below exploratory threshold; flag 70-74 for PAPER_EXPLORATORY_ONLY tagging
-        lv_exploratory_allowed = False
-        if low_vol_mode:
+        # High-conviction bypass: RVOL>=3 + news_impact>=50 + tight spread skips score gate
+        # (still subject to RVOL gate and spread gate below)
+        lv_exploratory_allowed   = False
+        lv_high_conviction_bypass = False
+        if low_vol_mode and hc_ok:
+            _pre_rvol        = pick.get("rel_volume", 0)
+            _pre_news_impact = pick.get("_top_news_impact", 0)
+            if _pre_rvol >= 3.0 and spread_pct <= PREFERRED_SPREAD_PCT and _pre_news_impact >= 50:
+                lv_high_conviction_bypass = True
+                print(f"   [HC_OVERRIDE] {symbol}: RVOL={_pre_rvol:.1f}x  "
+                      f"news={_pre_news_impact}  spread={spread_pct:.3%} — "
+                      f"LOW_VOLUME score gate bypassed")
+                log_audit("LV_HC_OVERRIDE", symbol, {
+                    "rvol": _pre_rvol, "news_impact": _pre_news_impact,
+                    "spread_pct": round(spread_pct, 4), "score": score,
+                })
+        if low_vol_mode and not lv_high_conviction_bypass:
             if TRADING_MODE == "LIVE":
                 if score < LIVE_LOW_VOLUME_MIN_SCORE:
                     print(f"   [SKIP] {symbol}: LOW_VOLUME requires score>={LIVE_LOW_VOLUME_MIN_SCORE} "
