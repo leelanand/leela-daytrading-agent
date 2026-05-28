@@ -9,11 +9,13 @@ Open: http://localhost:8765
 import json
 import re
 import sqlite3
+import threading
 import time
 import urllib.request
 from datetime import date, datetime
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from zoneinfo import ZoneInfo
 
 BST  = ZoneInfo("Europe/London")
@@ -210,6 +212,7 @@ def _env_dict(directory: Path) -> dict:
 
 _balance_cache: dict = {}
 _balance_cache_ts: float = 0.0
+_balance_lock = threading.Lock()
 _BALANCE_TTL = 60  # seconds
 
 
@@ -262,11 +265,16 @@ def _live_balances() -> dict:
     global _balance_cache, _balance_cache_ts
     if time.time() - _balance_cache_ts < _BALANCE_TTL:
         return _balance_cache
-    _balance_cache = {
-        "alpaca": _fetch_alpaca_balance(),
-        "ibkr":   _fetch_ibkr_balance(),
-    }
-    _balance_cache_ts = time.time()
+    if not _balance_lock.acquire(blocking=False):
+        return _balance_cache  # another thread is refreshing; return stale cache
+    try:
+        _balance_cache = {
+            "alpaca": _fetch_alpaca_balance(),
+            "ibkr":   _fetch_ibkr_balance(),
+        }
+        _balance_cache_ts = time.time()
+    finally:
+        _balance_lock.release()
     return _balance_cache
 
 
@@ -298,14 +306,14 @@ def _agent_status() -> dict:
                 if l.startswith("[20"):
                     s["last_ts"] = l[1:17]
                     break
-            # Override mode from log if agent is actively running
-            head = "\n".join(lines[:30])
+            # Override mode from log only if the log contains today's date
+            today_str = date.today().isoformat()
+            head = "\n".join(l for l in lines[:30] if today_str in l)
             if "[LIVE]" in head:
                 s["mode"] = "LIVE"
             elif "[PAPER]" in head:
                 s["mode"] = "PAPER"
             # Portfolio balance — today's lines only to avoid stale log
-            today_str = date.today().isoformat()
             for l in reversed(lines):
                 if today_str not in l:
                     continue
@@ -545,7 +553,7 @@ def _schedule_rows(audit: list[dict]) -> list[dict]:
 
         # ET time — DST-aware via zoneinfo (handles BST/GMT and EDT/EST transitions)
         h, m    = divmod(hhmm, 100)
-        uk_dt   = datetime(now_bst.year, now_bst.month, now_bst.day, h, m,
+        uk_dt   = datetime(now.year, now.month, now.day, h, m,
                            tzinfo=ZoneInfo("Europe/London"))
         et_dt   = uk_dt.astimezone(ET)
         et      = et_dt.strftime("%H:%M")
@@ -1101,8 +1109,12 @@ class Handler(BaseHTTPRequestHandler):
         pass  # suppress access log noise
 
 
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+
 if __name__ == "__main__":
-    server = HTTPServer(("127.0.0.1", PORT), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"Dashboard running → http://localhost:{PORT}")
     print("Press Ctrl+C to stop.")
     try:
