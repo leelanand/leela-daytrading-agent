@@ -107,6 +107,12 @@ def _launch_ps1(script: Path, cwd: Path):
     )
 
 
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+MISSED_FEEDBACK_FILE  = ALPACA_DIR / "missed_feedback.jsonl"
+LATE_ADDITIONS_EXPIRY = 45   # minutes — late addition symbols expire after this
+
+
 # ── Tool implementations ──────────────────────────────────────────────────────
 
 def tool_get_bpm_status(_: dict) -> dict:
@@ -346,6 +352,119 @@ def tool_run_agent_command(args: dict) -> dict:
         return {"error": str(e)}
 
 
+def tool_log_missed_opportunities(args: dict) -> dict:
+    """
+    Logs significant missed movers to missed_feedback.jsonl and, when still in the
+    trading window, injects them as late additions for immediate rescoring by both agents.
+
+    Threshold: high_pct >= threshold_pct (default 4.0).
+    Late additions are written only when:
+      - time < 15:00 ET
+      - regime is not NO_TRADE
+      - loss_limit_hit is False
+      - pdt_remaining != 0
+    """
+    import urllib.request
+    threshold = args.get("threshold_pct", 4.0)
+
+    # Fetch fresh BPM to get current missed movers and risk state
+    try:
+        with urllib.request.urlopen(BPM_URL, timeout=8) as resp:
+            bpm = json.loads(resp.read())
+    except Exception as e:
+        return {"error": f"BPM unreachable: {e}"}
+
+    missed_section = bpm.get("missed", {})
+    risk_section   = bpm.get("risk",   {})
+    regime_section = bpm.get("regime", {})
+    movers         = missed_section.get("movers", [])
+
+    # Guard: conditions that block late additions
+    now_et       = datetime.now()  # local time on Windows — adjust if needed
+    try:
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        pass
+    mins_et       = now_et.hour * 60 + now_et.minute
+    in_window     = 9 * 60 + 45 <= mins_et < 15 * 60  # before 15:00 ET
+    regime_ok     = regime_section.get("current", "UNKNOWN") not in ("NO_TRADE",)
+    loss_ok       = not risk_section.get("loss_limit_hit", False)
+    pdt_ok        = risk_section.get("pdt_remaining", -1) != 0
+
+    significant   = [
+        m for m in movers
+        if isinstance(m, dict) and m.get("high_pct", 0) >= threshold
+    ]
+
+    if not significant:
+        return {"logged": [], "late_added": [], "message": "No significant misses above threshold"}
+
+    today_str  = datetime.now().strftime("%Y-%m-%d")
+    logged_at  = datetime.now().isoformat()
+    feedback_lines = []
+    late_syms  = []
+
+    for m in significant:
+        sym    = m.get("symbol", "")
+        status = m.get("status", "unknown")
+        if not sym:
+            continue
+        record = {
+            "date":             today_str,
+            "symbol":           sym,
+            "move_pct":         m.get("move_pct", 0),
+            "high_pct":         m.get("high_pct", 0),
+            "status":           status,
+            "rejection_reason": m.get("rejection_reason", ""),
+            "logged_at":        logged_at,
+        }
+        feedback_lines.append(record)
+
+        if status == "missed_entirely" and in_window and regime_ok and loss_ok and pdt_ok:
+            late_syms.append(sym)
+
+    # Append to missed_feedback.jsonl in both agent dirs
+    for d in (ALPACA_DIR, IBKR_DIR):
+        fb_file = d / "missed_feedback.jsonl"
+        try:
+            with open(fb_file, "a", encoding="utf-8") as f:
+                for rec in feedback_lines:
+                    f.write(json.dumps(rec) + "\n")
+        except Exception as e:
+            _log(f"Could not write missed_feedback.jsonl ({d.name}): {e}", "WARNING")
+
+    _log(f"Logged {len(feedback_lines)} missed movers to feedback file "
+         f"({', '.join(r['symbol'] for r in feedback_lines)})", "ACTION")
+
+    # Write late_additions.json if applicable
+    if late_syms:
+        payload = {
+            "saved_at": datetime.now(ZoneInfo("America/New_York")).isoformat()
+                        if 'ZoneInfo' in dir() else datetime.now().isoformat(),
+            "symbols": late_syms,
+            "source":  "ops_agent_missed_opportunities",
+        }
+        for d in (ALPACA_DIR, IBKR_DIR):
+            try:
+                (d / "late_additions.json").write_text(json.dumps(payload, indent=2))
+            except Exception as e:
+                _log(f"Could not write late_additions.json ({d.name}): {e}", "WARNING")
+        _log(f"Injected {len(late_syms)} late addition(s) for next scan: "
+             f"{', '.join(late_syms)}", "ACTION")
+    elif significant and not in_window:
+        _log("Trading window closed — missed movers logged for next-day research only", "INFO")
+    elif significant and not (regime_ok and loss_ok and pdt_ok):
+        _log("Late additions blocked: regime/loss/PDT constraint active", "INFO")
+
+    return {
+        "logged":     [r["symbol"] for r in feedback_lines],
+        "late_added": late_syms,
+        "in_window":  in_window,
+        "details":    feedback_lines,
+    }
+
+
 def tool_log_action(args: dict) -> dict:
     _log(args["message"], args.get("severity", "INFO"))
     return {"logged": True}
@@ -358,15 +477,16 @@ def tool_complete(args: dict) -> dict:
 # ── Tool registry ─────────────────────────────────────────────────────────────
 
 TOOL_FNS = {
-    "get_bpm_status":    tool_get_bpm_status,
-    "check_gateway":     tool_check_gateway,
-    "get_process_info":  tool_get_process_info,
-    "restart_pipeline":  tool_restart_pipeline,
-    "restart_dashboard": tool_restart_dashboard,
-    "clear_cache":       tool_clear_cache,
-    "run_agent_command": tool_run_agent_command,
-    "log_action":        tool_log_action,
-    "complete":          tool_complete,
+    "get_bpm_status":            tool_get_bpm_status,
+    "check_gateway":             tool_check_gateway,
+    "get_process_info":          tool_get_process_info,
+    "restart_pipeline":          tool_restart_pipeline,
+    "restart_dashboard":         tool_restart_dashboard,
+    "clear_cache":               tool_clear_cache,
+    "run_agent_command":         tool_run_agent_command,
+    "log_missed_opportunities":  tool_log_missed_opportunities,
+    "log_action":                tool_log_action,
+    "complete":                  tool_complete,
 }
 
 TOOLS = [
@@ -424,6 +544,26 @@ TOOLS = [
                 "command": {"type": "string", "enum": ["--prescan", "--research"]},
             },
             "required": ["agent", "command"],
+        },
+    },
+    {
+        "name": "log_missed_opportunities",
+        "description": (
+            "Log significant missed movers (high_pct >= threshold_pct) to missed_feedback.jsonl "
+            "for next-day research enrichment, and — if still in the trading window before 15:00 ET "
+            "with no blocking risk conditions — inject missed_entirely symbols into late_additions.json "
+            "so both agents rescore them at the next scan cycle. "
+            "Call this whenever missed.missed_count > 0 or missed.rejected_missed > 0."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "threshold_pct": {
+                    "type": "number",
+                    "description": "Minimum high_pct to consider a significant miss (default 4.0)",
+                },
+            },
+            "required": [],
         },
     },
     {
@@ -514,9 +654,15 @@ STRATEGY: < 5 trades today → insufficient data, don't judge.
   Win rate < 30% with 5+ trades → flag as observation.
   Consecutive losses pattern in today_trades → observation only, human decides.
 
-MISSED OPPORTUNITIES: missed_count > 3 significant movers → log as observation.
-  If all missed because of LOW_VOLUME/CHOPPY regime → regime is doing its job, OK.
-  If missed due to score threshold and movers were clean setups → worth noting.
+MISSED OPPORTUNITIES: Always call log_missed_opportunities when missed_count > 0 or rejected_missed > 0.
+  threshold_pct=4.0 is standard; use 3.0 in LOW_VOLUME/CHOPPY regimes where fewer big movers appear.
+  The tool handles three outcomes automatically:
+    a) Feedback log (always): appends to missed_feedback.jsonl for next-morning research enrichment
+    b) Late injection (if window open): writes late_additions.json so both agents rescore at next scan
+    c) Blocked injection (if window closed / NO_TRADE / loss_limit / PDT=0): feedback-only, note in observations
+  After calling: report what was logged and whether late additions were injected.
+  If all misses are from CHOPPY/LOW_VOLUME regime → note "regime correctly filtered these; logged for pattern analysis".
+  If misses were rejected_missed (had rejection reasons) → note the rejection reasons in observations.
 
 WHY_NOT_TRADING: Synthesises the above. If in_window=True and primary reason is "No candidates"
   with 0 tradeable → normal, just no setups. Don't over-act on a quiet market day.

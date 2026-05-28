@@ -15,6 +15,7 @@ import finnhub
 import yfinance as yf
 import anthropic
 from datetime import datetime, timezone, date
+from pathlib import Path
 from config import (
     ANTHROPIC_API_KEY, FINNHUB_API_KEY, WATCHLIST,
     RESEARCH_CACHE_FILE, RESEARCH_CACHE_HOURS, CLAUDE_RESEARCH_TOP_N,
@@ -211,6 +212,49 @@ def _synthesise(symbol_data: list[dict], macro: dict) -> list[dict]:
     return json.loads(text.strip())
 
 
+# ── Missed-opportunity feedback enrichment ────────────────────────────────────
+
+_ALPACA_DIR = Path(__file__).parent
+_IBKR_DIR   = Path(r"C:\Users\leela\leela-ibkr-agent")
+
+
+def _load_missed_feedback_symbols(lookback_days: int = 5, min_high_pct: float = 5.0,
+                                  min_occurrences: int = 2) -> list[str]:
+    """
+    Read missed_feedback.jsonl from both agents.
+    Return symbols that had high_pct >= min_high_pct on >= min_occurrences of the last lookback_days.
+    These are symbols the pipeline consistently misses big moves on — worth adding to research.
+    """
+    from collections import defaultdict
+    from datetime import date, timedelta
+
+    cutoff = (date.today() - timedelta(days=lookback_days)).isoformat()
+    counts: dict[str, int] = defaultdict(int)
+
+    for d in (_ALPACA_DIR, _IBKR_DIR):
+        fb = d / "missed_feedback.jsonl"
+        if not fb.exists():
+            continue
+        try:
+            for line in fb.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    if rec.get("date", "") < cutoff:
+                        continue
+                    if rec.get("high_pct", 0) >= min_high_pct:
+                        counts[rec["symbol"]] += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    enriched = [sym for sym, cnt in counts.items() if cnt >= min_occurrences]
+    return enriched
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def run_premarket_research() -> dict:
@@ -236,13 +280,24 @@ def run_premarket_research() -> dict:
     if macro.get("economic_events"):
         print(f"   [RESEARCH] Key events today: {', '.join(macro['economic_events'])}")
 
+    # Add symbols consistently missed by the ops-agent feedback loop
+    feedback_syms = _load_missed_feedback_symbols()
+    extra_syms    = [s for s in feedback_syms if s not in WATCHLIST]
+    if extra_syms:
+        print(f"   [RESEARCH] +{len(extra_syms)} feedback-enriched symbol(s) from missed opportunities: "
+              f"{', '.join(extra_syms)}")
+    research_universe = list(WATCHLIST) + extra_syms
+
     symbol_data = []
-    for sym in WATCHLIST:
+    for sym in research_universe:
         d = _fetch_symbol_data(sym)
+        if sym in extra_syms:
+            d["_from_feedback"] = True
         symbol_data.append(d)
         print(f"   [RESEARCH]   {sym:6s}  float={d.get('float_shares_m', '?')}M  "
               f"short_ratio={d.get('short_ratio', '?')}  "
-              f"rating={d.get('analyst_rating', '?')}")
+              f"rating={d.get('analyst_rating', '?')}"
+              + (" [FEEDBACK]" if sym in extra_syms else ""))
 
     # Rank symbols by research interest; send only top-N to Claude
     symbol_data.sort(key=_local_research_rank, reverse=True)
