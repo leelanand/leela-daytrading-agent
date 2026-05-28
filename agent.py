@@ -1521,17 +1521,39 @@ def _scan_and_trade(paper_mode: bool = False):
             pq = pullback_result.get("pullback_quality", "NONE")
             print(f"   Pullback {symbol}: {pq} — {pullback_result.get('pullback_reason', '')}")
 
-        # ORB/pullback mandatory gate — risky setups require ORB or pullback confirmation
+        # Confirmation gate — pattern confirmation required in CHOPPY and for risky setups
         if not avoid_override_pending:
-            orb_pb_confirmed  = orb_breakout or pullback_result.get("pullback_detected", False)
-            needs_confirmation = score_below_min or is_experimental or regime == CHOPPY or low_vol_mode
-            if needs_confirmation and not orb_pb_confirmed:
-                print(f"   [SKIP] {symbol}: risky setup requires ORB/pullback confirmation "
-                      f"(score={score}, regime={regime}, experimental={is_experimental})")
-                _reject(symbol, score, setup_type, "orb_pullback_gate", "orb_pullback_required",
-                        observed=f"orb={orb_breakout},pb={pullback_result.get('pullback_detected',False)}",
-                        is_experimental=is_experimental)
-                continue
+            pb_detected = pullback_result.get("pullback_detected", False)
+
+            if regime == CHOPPY:
+                # CHOPPY: every trade needs one of four pattern confirmations
+                vwap_reclaim_confirmed = setup_type == "vwap_reclaim"
+                news_momentum_elite    = (
+                    setup_type == "news_momentum"
+                    and pick.get("rel_volume", 0) >= 2.5
+                    and spread_pct <= 0.15
+                )
+                choppy_ok = orb_breakout or vwap_reclaim_confirmed or pb_detected or news_momentum_elite
+                if not choppy_ok:
+                    print(f"   [SKIP] {symbol}: CHOPPY requires ORB/VWAP-reclaim/pullback/news-elite "
+                          f"(score={score} setup={setup_type} "
+                          f"rvol={pick.get('rel_volume',0):.1f}x spread={spread_pct:.3f}%)")
+                    _reject(symbol, score, setup_type, "choppy_gate", "choppy_confirmation_required",
+                            observed=f"orb={orb_breakout},vwap_reclaim={vwap_reclaim_confirmed},"
+                                     f"pb={pb_detected},news_elite={news_momentum_elite}",
+                            is_experimental=is_experimental)
+                    continue
+            else:
+                # Non-CHOPPY: only risky setups need ORB/pullback confirmation
+                orb_pb_confirmed   = orb_breakout or pb_detected
+                needs_confirmation = score_below_min or is_experimental or low_vol_mode
+                if needs_confirmation and not orb_pb_confirmed:
+                    print(f"   [SKIP] {symbol}: risky setup requires ORB/pullback confirmation "
+                          f"(score={score}, regime={regime}, experimental={is_experimental})")
+                    _reject(symbol, score, setup_type, "orb_pullback_gate", "orb_pullback_required",
+                            observed=f"orb={orb_breakout},pb={pb_detected}",
+                            is_experimental=is_experimental)
+                    continue
 
         # ATR-aware stop (spec point 7)
         atr_stop = atr_aware_stop_pct(bars_1min, price)

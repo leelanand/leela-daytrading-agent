@@ -111,7 +111,10 @@ def _get_current_regime() -> str:
 
 # ── Local pre-scoring (gate only — not used for trading decisions) ─────────────
 
-def _local_score(c: dict, research: dict) -> int:
+def _local_score(c: dict, research: dict,
+                 etf_data: dict | None = None,
+                 broad: dict | None = None,
+                 top_impact: int = 0) -> int:
     """Rough deterministic estimate used only to decide whether to call Claude."""
     score = 50
 
@@ -127,10 +130,59 @@ def _local_score(c: dict, research: dict) -> int:
     elif rvol >= 1.5: score += 7
     elif rvol >= 1.3: score += 2
 
+    # Setup-type bonuses
+    setup_type = c.get("setup_type", "")
+    if setup_type == "vwap_reclaim":
+        score += 8
+    if setup_type in ("orb_continuation", "gap_and_go"):
+        score += 8
+
+    # Price above VWAP and holding
+    price = c.get("price", 0)
+    vwap  = c.get("vwap", 0)
+    if vwap > 0 and price > vwap:
+        score += 5
+
+    # Sector ETF positive today
+    if etf_data:
+        sector     = c.get("sector", "Unknown")
+        etf_ticker = SECTOR_ETFS.get(sector)
+        if etf_ticker and etf_data.get(etf_ticker, 0) > 0:
+            score += 5
+
+    # Strong news catalyst
+    if top_impact >= 70:
+        score += 8
+
+    # RVOL acceleration (projected vol accelerating vs baseline)
+    if c.get("vol_trend_ratio", 0) >= 1.2:
+        score += 5
+
+    # Penalties
     if c.get("below_vwap", False):           score -= 6
     if c.get("vol_trend_ratio", 1.0) < 0.8: score -= 6
-    if c.get("spread_pct", 0) > 0.20:       score -= 7
-    if c.get("halted", False):               return 0
+    spread = c.get("spread_pct", 0)
+    if spread > 0.20: score -= 7
+    if spread > 0.30: score -= 8   # spread actively widening
+    if c.get("halted", False): return 0
+
+    # Price extended >2x intraday range from VWAP
+    vol_pct = c.get("volatility_pct", 0)
+    if vwap > 0 and price > 0 and vol_pct > 0:
+        vwap_dist_pct = abs(price - vwap) / price * 100
+        if vwap_dist_pct > vol_pct * 2:
+            score -= 10
+
+    # Failed breakout proxy: gapped up but now trading below open
+    if c.get("gap_pct", 0) > 1.5 and c.get("move_from_open", 0) < -1.0:
+        score -= 12
+
+    # QQQ and SPY both actively selling off
+    if broad:
+        spy_gap = broad.get("SPY_gap", 0) or 0
+        qqq_gap = broad.get("QQQ_gap", 0) or 0
+        if spy_gap < -0.5 and qqq_gap < -0.5:
+            score -= 10
 
     bias   = research.get("pre_market_bias", "NEUTRAL")
     rscore = research.get("research_score", 50)
@@ -379,10 +431,10 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
             if n["impact_score"] >= NEWS_MIN_IMPACT_SCORE
         ]
         research   = get_research(sym)
-        local      = _local_score(c, research)
+        top_impact = next((n["impact_score"] for n in all_news if n["ticker"] == sym), 0)
+        local      = _local_score(c, research, etf_data=etf_data, broad=broad, top_impact=top_impact)
         h          = _candidate_hash(c, top_news, research, regime)
         snap       = _build_snap(c, top_news, regime)
-        top_impact = next((n["impact_score"] for n in all_news if n["ticker"] == sym), 0)
         candidate_ctx.append({
             "c":           c,
             "sym":         sym,
@@ -407,28 +459,37 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
         local = ctx["local_score"]
 
         if local < CLAUDE_MIN_LOCAL_SCORE:
-            # Conditional exploratory gate (paper-only): allow 60-64 through to Claude
-            # when at least one qualifying condition holds
-            exploratory_gate_ok = False
-            if TRADING_MODE != "LIVE" and local >= CLAUDE_MIN_LOCAL_SCORE_EXPLORATORY:
-                c_obj           = ctx["c"]
-                research        = ctx["research"]
-                rvol            = c_obj.get("rel_volume", 0.0) or c_obj.get("rvol", 0.0) or 0.0
-                is_top_gapper   = bool(c_obj.get("_is_top_gapper", False))
-                strong_catalyst = ctx.get("top_impact", 0) >= 70
-                high_rvol       = rvol >= 2.0
-                float_m         = research.get("float_shares_m", 0) or 0
-                short_ratio     = research.get("short_ratio", 0) or 0
-                unusual_float   = 0 < float_m < 20          # small float < 20M shares
-                unusual_short   = short_ratio > 5            # heavily shorted
-                near_exploratory = local >= 60  # by definition (>= CLAUDE_MIN_LOCAL_SCORE_EXPLORATORY)
-                exploratory_gate_ok = (is_top_gapper or strong_catalyst or high_rvol
-                                       or near_exploratory or unusual_float or unusual_short)
+            c_obj          = ctx["c"]
+            research       = ctx["research"]
+            rvol           = c_obj.get("rel_volume", 0.0) or c_obj.get("rvol", 0.0) or 0.0
+            is_top_gapper  = bool(c_obj.get("_is_top_gapper", False))
+            strong_catalyst = ctx.get("top_impact", 0) >= 70
+            setup_type_c   = c_obj.get("setup_type", "")
+            orb_vwap_signal = setup_type_c in ("vwap_reclaim", "orb_continuation", "gap_and_go")
+
+            # Override: always send to Claude when strong signals present (LIVE or PAPER)
+            force_to_claude = strong_catalyst or rvol >= 2.5 or is_top_gapper or orb_vwap_signal
+            exploratory_gate_ok = force_to_claude
+            if force_to_claude:
+                print(f"   [ANALYST] {sym}: local={local} — forced to Claude "
+                      f"(cat={strong_catalyst} rvol={rvol:.1f}x gapper={is_top_gapper} "
+                      f"setup={setup_type_c})")
+                ctx["_force_to_claude"] = True
+
+            # Paper-only exploratory gate (wider conditions, lower rvol bar)
+            if not exploratory_gate_ok and TRADING_MODE != "LIVE" and local >= CLAUDE_MIN_LOCAL_SCORE_EXPLORATORY:
+                float_m      = research.get("float_shares_m", 0) or 0
+                short_ratio  = research.get("short_ratio", 0) or 0
+                unusual_float = 0 < float_m < 20
+                unusual_short = short_ratio > 5
+                exploratory_gate_ok = (is_top_gapper or strong_catalyst or rvol >= 2.0
+                                       or local >= 60 or unusual_float or unusual_short)
                 if exploratory_gate_ok:
                     print(f"   [ANALYST] {sym}: local={local} qualifies for exploratory Claude gate "
                           f"(gapper={is_top_gapper} cat={strong_catalyst} rvol={rvol:.1f} "
                           f"float={float_m:.0f}M unusual={unusual_float} short_ratio={short_ratio:.1f})")
                     ctx["_exploratory_gate_used"] = True
+
             if not exploratory_gate_ok:
                 budget["local_rejects"] += 1
                 results[sym] = _make_local_result(ctx, local, news_stats)
