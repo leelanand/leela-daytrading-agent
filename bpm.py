@@ -534,7 +534,6 @@ def _market_data() -> dict:
     if not fq:
         fq = _read_json(ALPACA_DIR / "feed_quality.json")
 
-    connected        = fh.get("connected", False)
     ibkr_status      = fh.get("status", "unknown")
     quote_age        = fh.get("quote_age_secs")
     market_data_type = fh.get("market_data_type")
@@ -544,12 +543,18 @@ def _market_data() -> dict:
     validations      = max(fq.get("quote_validations", 1), 1)
     trades_rejected_data = fq.get("trades_rejected_data", 0)
 
+    # `connected` field is unreliable — IBKR agent disconnects between 30s monitor cycles,
+    # leaving the field False/empty even when the feed is healthy. Use quote_age as the
+    # real signal: fresh quotes (<60s) means the pipeline IS connecting successfully.
+    raw_connected = fh.get("connected", False)
+    connected = bool(raw_connected) or (quote_age is not None and quote_age < 60)
+
     mismatch_pct = round(mismatches / validations * 100, 1)
 
     confidence = 100
     if not connected:
         confidence -= 50
-        issues.append("CRITICAL: IB Gateway disconnected")
+        issues.append("CRITICAL: IB Gateway disconnected — no recent quotes")
     if quote_age and quote_age > 60:
         confidence -= 20
         issues.append(f"WARNING: Quote age {quote_age:.0f}s — stale feed")
