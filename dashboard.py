@@ -249,7 +249,7 @@ def _fetch_ibkr_balance() -> str:
             await ib.connectAsync("127.0.0.1", port, clientId=9, timeout=5)
             await asyncio.sleep(0.5)
             for v in ib.accountValues():
-                if v.tag == "NetLiquidation" and v.currency == "USD":
+                if v.tag == "NetLiquidation" and v.currency in ("USD", "GBP", "BASE"):
                     val = v.value
                     ib.disconnect()
                     return f"{float(val):,.2f}"
@@ -313,10 +313,8 @@ def _agent_status() -> dict:
                 s["mode"] = "LIVE"
             elif "[PAPER]" in head:
                 s["mode"] = "PAPER"
-            # Portfolio balance — today's lines only to avoid stale log
-            for l in reversed(lines):
-                if today_str not in l:
-                    continue
+            # Portfolio balance — scan last 120 lines; Portfolio header has no timestamp
+            for l in reversed(lines[-120:]):
                 if "Portfolio" in l and "$" in l:
                     try:
                         s["portfolio"] = l.split("$")[1].split()[0].replace(",", "")

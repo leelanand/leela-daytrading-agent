@@ -30,7 +30,7 @@ def can_trade() -> tuple[bool, float, str]:
     portfolio = float(acct.portfolio_value)
     start     = float(acct.last_equity)
 
-    daily_pnl_pct = (portfolio - start) / start
+    daily_pnl_pct = (portfolio - start) / start if start > 0 else 0.0
     if daily_pnl_pct < -DAILY_LOSS_LIMIT:
         return False, portfolio, f"Daily loss limit hit ({daily_pnl_pct:.1%})"
 
