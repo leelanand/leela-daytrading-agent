@@ -23,17 +23,18 @@ IBKR_DIR   = Path(r"C:\Users\leela\leela-ibkr-agent")
 
 # BST schedule: (hhmm, label, event_key, window)
 SCHEDULE = [
-    (1400, "Pre-market research",              "RESEARCH",     "pre"),
-    (1433, "Prescan  — no orders placed",      "PRESCAN",      "pre"),
-    (1448, "First scan — first trade possible","SCAN_1",       "trading"),
-    (1500, "Scan loop every 5 min",            "SCANNING",     "trading"),
-    (1700, "Midday block — no new entries",    "MIDDAY_START", "blocked"),
-    (1800, "Afternoon session — trading resumes","MIDDAY_END", "trading"),
-    (2030, "Stop new scans — last entry cutoff","SCAN_STOP",   "closing"),
-    (2044, "Force close all positions",        "FORCE_CLOSE",  "closing"),
-    (2055, "Verify flat",                      "VERIFIED",     "eod"),
-    (2100, "EOD report",                       "REPORT",       "eod"),
-    (2115, "Performance dashboard",            "PERFORMANCE",  "eod"),
+    (1330, "Research — fundamentals + Claude brief", "RESEARCH",     "pre"),
+    (1440, "Precheck — live gate TEST_01/02/14/20",  "PRECHECK",     "pre"),
+    (1445, "Prescan — score candidates, no orders",  "PRESCAN",      "pre"),
+    (1450, "Continuous scan (5/15/10 min cadence)",  "CONTINUOUS",   "trading"),
+    (1500, "Monitor loop (45s cadence)",             "MONITOR",      "trading"),
+    (1700, "Midday block — no new entries",          "MIDDAY_START", "blocked"),
+    (1800, "Afternoon session resumes",              "MIDDAY_END",   "trading"),
+    (2030, "Cutoff — cancel unfilled limit orders",  "CUTOFF",       "closing"),
+    (2044, "Force close all positions",              "FORCE_CLOSE",  "closing"),
+    (2055, "Verify flat",                            "VERIFIED",     "eod"),
+    (2115, "EOD report",                             "REPORT",       "eod"),
+    (2130, "Performance dashboard",                  "PERFORMANCE",  "eod"),
 ]
 
 LOG_RE = re.compile(
@@ -264,6 +265,38 @@ def _gappers_today() -> list[dict]:
     return merged
 
 
+def _live_gate_status() -> dict:
+    """Read live_gate_state.json from both agents. Returns first fresh one found."""
+    today = date.today().isoformat()
+    result = {}
+    for name, d in [("alpaca", ALPACA_DIR), ("ibkr", IBKR_DIR)]:
+        try:
+            f = d / "live_gate_state.json"
+            if not f.exists():
+                continue
+            data = json.loads(f.read_text())
+            if data.get("date") == today:
+                result[name] = data
+        except Exception:
+            pass
+    return result
+
+
+def _feed_health() -> dict:
+    """Read IBKR feed_health.json for IB Gateway status and quote age."""
+    try:
+        f = IBKR_DIR / "feed_health.json"
+        if f.exists():
+            return json.loads(f.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def _ibkr_trades_today() -> list[dict]:
+    return _trades_today(IBKR_DIR / "daytrades.db")
+
+
 # ── Schedule status ───────────────────────────────────────────────────────────
 
 def _schedule_rows(audit: list[dict]) -> list[dict]:
@@ -274,15 +307,18 @@ def _schedule_rows(audit: list[dict]) -> list[dict]:
 
     # Derive booleans
     research_ok     = _research_done()
+    precheck_ok     = "LIVE_GATE_PASS"  in actions
+    precheck_fail   = "LIVE_GATE_FAIL"  in actions
     prescan_ok      = "PRESCAN_DONE"    in actions
     prescan_skipped = "PRESCAN_SKIPPED" in actions
-    scan_skipped    = "SCAN_SKIPPED"    in actions
     force_ok        = "FORCE_CLOSE"     in actions
+    cutoff_ok       = "CUTOFF_DONE"     in actions or "CUTOFF" in actions
     verified_ok     = "VERIFIED" in actions or "EOD_VERIFIED" in actions
     perf_ok         = bool(_perf_today())
-    scan_count      = sum(1 for e in audit if e["action"] in ("SCAN_DONE", "SCAN_START"))
+    scan_count      = sum(1 for e in audit if e["action"] in ("SCAN_DONE", "SCAN_START", "CONTINUOUS_SCAN"))
     last_scan       = _last_scan_time(audit)
     any_order       = "ORDER_PLACED" in actions
+    monitor_active  = "MONITOR_START"   in actions
     regime_entry    = next((e for e in audit if e["action"] == "REGIME_DETECTED"), None)
     regime_note     = ""
     if regime_entry:
@@ -293,7 +329,6 @@ def _schedule_rows(audit: list[dict]) -> list[dict]:
         except Exception:
             pass
 
-    # candidates info
     t_count, w_count = _candidates_today()
 
     rows = []
@@ -307,9 +342,19 @@ def _schedule_rows(audit: list[dict]) -> list[dict]:
             else:
                 status, note = "pending", ""
 
+        elif key == "PRECHECK":
+            if precheck_ok:
+                status, note = "done", "LIVE_ENABLED=true"
+            elif precheck_fail:
+                status, note = "warn", "LIVE_ENABLED=false"
+            elif past:
+                status, note = "warn", "expected by now"
+            else:
+                status, note = "pending", ""
+
         elif key == "PRESCAN":
             if prescan_ok:
-                status, note = "done", f"{t_count}T {w_count}W"
+                status, note = "done", f"{t_count} candidates"
             elif prescan_skipped:
                 status, note = "skip", f"regime={regime_note}"
             elif past:
@@ -317,24 +362,24 @@ def _schedule_rows(audit: list[dict]) -> list[dict]:
             else:
                 status, note = "pending", ""
 
-        elif key == "SCAN_1":
-            if scan_count > 0:
-                status, note = "done", f"last {last_scan}"
-            elif scan_skipped:
-                status, note = "skip", f"regime={regime_note}"
-            elif past:
-                status, note = "warn", "expected by now"
-            else:
-                status, note = "pending", ""
-
-        elif key == "SCANNING":
+        elif key == "CONTINUOUS":
             in_midday = 1700 <= hhmm_now < 1800
             if force_ok:
                 status, note = "done", "closed"
             elif scan_count > 0 and not in_midday and hhmm_now < 2030:
-                status, note = "active", f"{scan_count} scans  {'📦 order' if any_order else ''}"
+                status, note = "active", f"{scan_count} scans{'  order placed' if any_order else ''}"
             elif in_midday:
                 status, note = "active", "midday block"
+            elif past:
+                status, note = "pending", ""
+            else:
+                status, note = "pending", ""
+
+        elif key == "MONITOR":
+            if force_ok:
+                status, note = "done", "flat"
+            elif monitor_active and hhmm_now < 2030:
+                status, note = "active", "45s cadence"
             elif past:
                 status, note = "pending", ""
             else:
@@ -348,9 +393,13 @@ def _schedule_rows(audit: list[dict]) -> list[dict]:
             status = "done" if past else ("active" if hhmm_now >= 1700 else "pending")
             note   = ""
 
-        elif key == "SCAN_STOP":
-            status = "done" if past else "pending"
-            note   = ""
+        elif key == "CUTOFF":
+            if cutoff_ok:
+                status, note = "done", "orders cancelled"
+            elif past:
+                status, note = "warn", "expected by now"
+            else:
+                status, note = "pending", ""
 
         elif key == "FORCE_CLOSE":
             if force_ok:
@@ -414,12 +463,16 @@ def _build_status() -> dict:
     now_et  = datetime.now(ET)
     audit   = _read_audit(ALPACA_DIR)
     trades  = _trades_today(ALPACA_DIR / "daytrades.db")
+    ibkr_trades = _ibkr_trades_today()
     eff     = _claude_eff()
     perf    = _perf_today()
     ibkr_log = _ibkr_log_tail()
     res_total, res_scored = _research_symbols()
+    live_gate = _live_gate_status()
+    feed_health = _feed_health()
 
     total_pnl = sum(t["pnl"] for t in trades) if trades else 0.0
+    ibkr_pnl  = sum(t["pnl"] for t in ibkr_trades) if ibkr_trades else 0.0
     wins      = sum(1 for t in trades if t["pnl"] > 0)
     losses    = sum(1 for t in trades if t["pnl"] <= 0)
 
@@ -433,7 +486,9 @@ def _build_status() -> dict:
         "today":      date.today().isoformat(),
         "schedule":   _schedule_rows(audit),
         "trades":     trades,
+        "ibkr_trades": ibkr_trades,
         "total_pnl":  round(total_pnl, 2),
+        "ibkr_pnl":   round(ibkr_pnl, 2),
         "wins":       wins,
         "losses":     losses,
         "claude_eff": eff,
@@ -445,6 +500,8 @@ def _build_status() -> dict:
         "perf":       {k: perf.get(k) for k in
                        ("win_rate", "profit_factor", "expectancy", "trades")
                        if k in perf},
+        "live_gate":  live_gate,
+        "feed_health": feed_health,
     }
 
 
@@ -516,13 +573,24 @@ HTML = r"""<!DOCTYPE html>
   .gapper-sym  { color:#3fb950; font-weight:bold; }
   .gapper-pct  { color:#8b949e; margin-left:4px; }
   .gapper-vol  { color:#484f58; margin-left:4px; font-size:10px; }
+  .gate-row    { display:flex; justify-content:space-between; padding:4px 0; border-top:1px solid #21262d; font-size:12px; }
+  .gate-row:first-of-type { border-top:none; }
+  .gate-key    { color:#8b949e; }
+  .gate-pass   { color:#3fb950; font-weight:bold; }
+  .gate-fail   { color:#f85149; font-weight:bold; }
+  .gate-none   { color:#484f58; }
+  .feed-ok     { color:#3fb950; }
+  .feed-warn   { color:#d29922; }
+  .feed-err    { color:#f85149; }
+  .feed-row    { display:flex; justify-content:space-between; padding:4px 0; border-top:1px solid #21262d; font-size:12px; }
+  .feed-row:first-of-type { border-top:none; }
 </style>
 </head>
 <body>
 <div class="header-bar">
   <div>
     <h1>Leela Trading Dashboard</h1>
-    <div class="subtitle">Alpaca paper + IBKR — auto-refresh every 30s</div>
+    <div class="subtitle">Alpaca LIVE + IBKR LIVE — IBKR real-time market data — auto-refresh every 30s</div>
   </div>
   <div style="text-align:right">
     <div class="time-display" id="clock-bst">--:-- BST</div>
@@ -547,15 +615,38 @@ HTML = r"""<!DOCTYPE html>
     </table>
   </div>
 
-  <!-- P&L -->
+  <!-- Live Gate Status -->
   <div class="card">
-    <h2>Today's Trades</h2>
+    <h2>Live Gate</h2>
+    <div id="live-gate-block"><span style="color:#484f58">Waiting for precheck...</span></div>
+  </div>
+
+  <!-- IB Gateway / Feed Health -->
+  <div class="card">
+    <h2>IB Gateway &amp; Feed</h2>
+    <div id="feed-health-block"><span style="color:#484f58">No feed health data yet.</span></div>
+  </div>
+
+  <!-- Alpaca P&L -->
+  <div class="card">
+    <h2>Alpaca — Today's Trades</h2>
     <div id="pnl-summary" style="margin-bottom:10px"></div>
     <table>
       <tr><th>Symbol</th><th>Shares</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Reason</th></tr>
       <tbody id="trades-body"></tbody>
     </table>
     <div id="no-trades" style="color:#484f58;font-size:12px;display:none">No trades today yet.</div>
+  </div>
+
+  <!-- IBKR P&L -->
+  <div class="card">
+    <h2>IBKR — Today's Trades</h2>
+    <div id="ibkr-pnl-summary" style="margin-bottom:10px"></div>
+    <table>
+      <tr><th>Symbol</th><th>Shares</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Reason</th></tr>
+      <tbody id="ibkr-trades-body"></tbody>
+    </table>
+    <div id="no-ibkr-trades" style="color:#484f58;font-size:12px;display:none">No IBKR trades today yet.</div>
   </div>
 
   <!-- Claude Effectiveness -->
@@ -618,7 +709,7 @@ function render(data) {
   // Schedule
   const sched = document.getElementById('schedule-body');
   sched.innerHTML = '';
-  const SCHED_HHMM = [1400,1433,1448,1500,1700,1800,2030,2044,2055,2100,2115];
+  const SCHED_HHMM = [1330,1440,1445,1450,1500,1700,1800,2030,2044,2055,2115,2130];
   data.schedule.forEach((row, i) => {
     const tr = document.createElement('tr');
     const isCurrent = (i < data.schedule.length - 1)
@@ -695,6 +786,87 @@ function render(data) {
       <div style="margin-top:8px;color:#8b949e;font-size:11px">Research: ${res.claude_scored} of ${res.total} symbols sent to Claude</div>`;
   }
   document.getElementById('claude-stats').innerHTML = claude_html;
+
+  // Live Gate
+  const gateDiv = document.getElementById('live-gate-block');
+  const lg = data.live_gate || {};
+  if (Object.keys(lg).length === 0) {
+    gateDiv.innerHTML = '<div class="gate-none">Waiting for precheck (14:40 BST)…</div>';
+  } else {
+    let html = '';
+    for (const [agName, g] of Object.entries(lg)) {
+      const enabled = g.live_enabled === true || g.LIVE_ENABLED === true;
+      const tests   = g.tests || {};
+      const passAll = enabled ? 'gate-pass' : 'gate-fail';
+      const label   = agName === 'alpaca' ? 'Alpaca' : 'IBKR';
+      html += `<div style="margin-bottom:8px"><strong style="color:#e6edf3">${label}</strong> <span class="${passAll}">${enabled ? '✓ LIVE_ENABLED' : '✗ BLOCKED'}</span>`;
+      for (const [k, v] of Object.entries(tests)) {
+        const cls = v === 'pass' || v === true ? 'gate-pass' : v === 'skip' ? 'gate-none' : 'gate-fail';
+        html += `<div class="gate-row"><span class="gate-key">${k}</span><span class="${cls}">${v}</span></div>`;
+      }
+      if (g.reason) html += `<div style="color:#8b949e;font-size:11px;margin-top:4px">${g.reason}</div>`;
+      html += '</div>';
+    }
+    gateDiv.innerHTML = html;
+  }
+
+  // Feed Health
+  const feedDiv = document.getElementById('feed-health-block');
+  const fh = data.feed_health || {};
+  if (!fh.checked_at) {
+    feedDiv.innerHTML = '<div class="gate-none">IB Gateway status unknown — no feed_health.json yet.</div>';
+  } else {
+    const connected = fh.connected === true;
+    const dataType  = fh.market_data_type || '?';
+    const dtLabel   = dataType == 1 ? 'Live real-time' : dataType == 2 ? 'Frozen' : dataType == 3 ? 'Delayed 15–20 min' : dataType == 4 ? 'Delayed frozen' : 'Unknown';
+    const dtClass   = dataType == 1 ? 'feed-ok' : dataType <= 2 ? 'feed-warn' : 'feed-err';
+    const connClass = connected ? 'feed-ok' : 'feed-err';
+    let fhtml = `<div class="feed-row"><span class="gate-key">IB Gateway</span><span class="${connClass}">${connected ? '● Connected' : '● Disconnected'}</span></div>`;
+    fhtml += `<div class="feed-row"><span class="gate-key">Data type</span><span class="${dtClass}">${dtLabel} (${dataType})</span></div>`;
+    if (fh.port) fhtml += `<div class="feed-row"><span class="gate-key">Port</span><span style="color:#8b949e">${fh.port}</span></div>`;
+    if (fh.symbols) {
+      for (const [sym, q] of Object.entries(fh.symbols)) {
+        const age  = q.age_s != null ? `${q.age_s}s ago` : '—';
+        const bid  = q.bid != null ? `$${q.bid}` : '—';
+        const ask  = q.ask != null ? `$${q.ask}` : '—';
+        const ageClass = q.age_s != null && q.age_s < 10 ? 'feed-ok' : q.age_s != null && q.age_s < 60 ? 'feed-warn' : 'feed-err';
+        fhtml += `<div class="feed-row"><span class="gate-key">${sym}</span><span><span class="${ageClass}">${age}</span> <span style="color:#8b949e">${bid}/${ask}</span></span></div>`;
+      }
+    }
+    if (fh.checked_at) fhtml += `<div style="color:#484f58;font-size:10px;margin-top:4px">Checked ${fh.checked_at.substring(11,19)}</div>`;
+    feedDiv.innerHTML = fhtml;
+  }
+
+  // IBKR Trades
+  const ibkrTb = document.getElementById('ibkr-trades-body');
+  const noIbkrTrades = document.getElementById('no-ibkr-trades');
+  const ibkrPnlSum = document.getElementById('ibkr-pnl-summary');
+  const ibkrTrades = data.ibkr_trades || [];
+  const ibkrPnl = data.ibkr_pnl || 0;
+  const ibkrWins = ibkrTrades.filter(t => t.pnl > 0).length;
+  const ibkrLosses = ibkrTrades.filter(t => t.pnl <= 0).length;
+  ibkrPnlSum.innerHTML = `
+    <span class="metric"><span class="metric-val ${pnlClass(ibkrPnl)}">$${ibkrPnl >= 0 ? '+' : ''}${ibkrPnl.toFixed(2)}</span><div class="metric-label">P&amp;L</div></span>
+    <span class="metric"><span class="metric-val">${ibkrWins}W / ${ibkrLosses}L</span><div class="metric-label">Trades</div></span>
+  `;
+  ibkrTb.innerHTML = '';
+  if (ibkrTrades.length === 0) {
+    noIbkrTrades.style.display = 'block';
+  } else {
+    noIbkrTrades.style.display = 'none';
+    ibkrTrades.forEach(t => {
+      const cls = pnlClass(t.pnl);
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="log-sym">${t.symbol}</td>
+        <td>${t.shares}</td>
+        <td>$${t.entry.toFixed(2)}</td>
+        <td>${t.exit ? '$'+t.exit.toFixed(2) : '—'}</td>
+        <td class="${cls}">$${t.pnl >= 0?'+':''}${t.pnl.toFixed(2)}</td>
+        <td style="color:#8b949e;font-size:11px">${t.reason||''}</td>`;
+      ibkrTb.appendChild(tr);
+    });
+  }
 
   // Recent log
   const logDiv = document.getElementById('log-entries');
