@@ -21,3 +21,9 @@ research_cache.json
 shortlist_state.json
 shortlist_monitor.log
 execution_telemetry.jsonl
+analyst_score_cache.json
+claude_effectiveness.jsonl
+gappers_today.json
+live_gate_state.json
+balance_cache.json
+_check_syntax.ps1
