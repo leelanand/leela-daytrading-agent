@@ -1,6 +1,8 @@
 """
-PAPER trading mode profile — learning, exploration, setup discovery.
+PAPER trading mode profile — full end-to-end pipeline test.
 Loaded by config.py when TRADING_MODE=PAPER (default when PAPER_TRADING=true).
+All live settings are intentionally left unchanged — only paper-specific
+execution limits are relaxed here to maximise trade throughput for testing.
 """
 
 # ── Score thresholds by regime ────────────────────────────────────────────────
@@ -51,3 +53,21 @@ DECAY_STRICT_EXPIRE = False
 # ── Candidate expiry and gapper refresh ──────────────────────────────────────
 CANDIDATE_EXPIRY_MINS        = 90
 GAPPER_REFRESH_INTERVAL_MINS = 15
+
+# ── Paper execution limits — relaxed for full pipeline testing ────────────────
+# Live values are preserved in config_live.py and must not be changed here.
+MAX_POSITIONS         = 10       # up to 10 concurrent positions (vs 3 live)
+POSITION_SIZE_PCT     = 0.08     # 8% per position × 10 = ~80% deployed
+MIN_POSITION_SIZE_PCT = 0.05     # floor
+MAX_POSITION_SIZE_PCT = 0.10     # cap — 10 × 10% = 100% max deployment
+MAX_TRADES_PER_DAY    = 20       # no meaningful cap — test all setups
+
+# ── Paper time gates — full day coverage ─────────────────────────────────────
+LIVE_ORDER_EARLIEST_ET = (9,  35)   # 09:35 ET / 14:35 BST — earlier entry window
+LIVE_ORDER_LATEST_ET   = (15, 45)   # 15:45 ET / 20:45 BST — close to EOD close time
+
+# ── Paper trading behaviour flags ────────────────────────────────────────────
+CROSS_AGENT_GATE_ENABLED  = False   # allow both agents to trade same symbol independently
+ALLOW_REENTRY             = True    # allow re-buying a symbol already held (cycling)
+MAX_PORTFOLIO_UTILISATION = 0.95    # stop new entries when deployed >= 95% of portfolio
+                                    # auto-resumes when utilisation falls back below limit

@@ -5,10 +5,10 @@ Loaded by config.py when TRADING_MODE=LIVE (default when PAPER_TRADING=false).
 
 # ── Score thresholds by regime ────────────────────────────────────────────────
 SCORE_THRESHOLDS = {
-    "base":          78,
-    "TRENDING_UP":   78,
+    "base":          75,
+    "TRENDING_UP":   75,
     "TRENDING_DOWN": 99,
-    "CHOPPY":        73,
+    "CHOPPY":        75,
     "LOW_VOLUME":    82,
     "HIGH_VOL":      80,
     "NO_TRADE":      99,
@@ -16,18 +16,18 @@ SCORE_THRESHOLDS = {
 
 # ── Score thresholds by setup type ────────────────────────────────────────────
 SETUP_THRESHOLDS = {
-    "gap_and_go":         78,
-    "news_momentum":      78,
+    "gap_and_go":         75,
+    "news_momentum":      75,
     "vol_spike":          80,
     "trend_continuation": 80,
     "orb_breakout":       75,
-    "pullback":           78,
+    "pullback":           75,
     "midday_reversal":    82,
     "low_float_squeeze":  88,
-    "power_hour":         76,
-    "vwap_reclaim":       76,
-    "orb_continuation":   76,
-    "hod_breakout":       78,
+    "power_hour":         75,
+    "vwap_reclaim":       75,
+    "orb_continuation":   75,
+    "hod_breakout":       75,
 }
 
 # ── Quality override — require ALL conditions in LIVE mode ────────────────────
@@ -54,13 +54,11 @@ GAPPER_REFRESH_INTERVAL_MINS = 15
 
 # ── Position sizing — tuned for sub-$25k account under PDT rule ───────────────
 # PDT allows 3 day trades per rolling 5-day window.
-# MAX_POSITIONS=2 conserves the allowance: worst case 2 trades/day × 3 days = fine.
-# 40% target per position × 2 max = 80% deployed at full capacity (~90% target met
-# across real fills which are rarely simultaneous).
-MAX_POSITIONS         = 2
-POSITION_SIZE_PCT     = 0.40   # target per position
-MIN_POSITION_SIZE_PCT = 0.25   # floor — never smaller than 25%
-MAX_POSITION_SIZE_PCT = 0.45   # cap  — 2 × 0.45 = 90% max deployment
+# 3 × 28% = 84% deployed at target; 3 × 30% = 90% max — same band as before.
+MAX_POSITIONS         = 3
+POSITION_SIZE_PCT     = 0.28   # target per position (~$370 on $1,320 account)
+MIN_POSITION_SIZE_PCT = 0.18   # floor
+MAX_POSITION_SIZE_PCT = 0.30   # cap  — 3 × 0.30 = 90% max deployment
 
 # Daily loss limit: 2% of equity — tighter than paper given real capital at risk
 # On $1,328 this is ~$26.56; stops all trading for the day if hit.

@@ -59,6 +59,7 @@ from config import (
     TIER_HIGH_MIN, TIER_ELITE_MIN, ELITE_SIZE_BOOST, MAX_POSITION_SIZE_PCT,
     MIN_POSITION_SIZE_PCT, DAILY_LOSS_LIMIT, MAX_POSITIONS,
     TAKE_PROFIT_PCT,
+    CROSS_AGENT_GATE_ENABLED, ALLOW_REENTRY,
     get_min_score,
     LIVE_BASE_SCORE,
     DECAY_BAND_1_MINS, DECAY_BAND_1_POINTS,
@@ -85,6 +86,7 @@ from risk import (
 )
 from logger import init_db, log_audit, log_paper_trade, today_summary, all_time_summary, log_telemetry
 from candidates import save_candidates, load_valid_candidates
+from morning_queue import queue_candidates, clear_old_queue
 from regime import detect_regime, is_tradeable, get_regime_context, LOW_VOLUME, CHOPPY, HIGH_VOL
 from sizing import dynamic_position_size
 from exits import record_entry, monitor_positions
@@ -104,7 +106,7 @@ from feed_health import run_health_check, log_health_event
 from polygon_feed import validate_cross_provider, detect_alpaca_subscription
 from massive_feed import (
     stream_quotes_burst, get_intraday_quality,
-    active_providers,
+    active_providers, get_rest_quote,
 )
 from feed_logger import log_trade_feed_inputs, log_feed_event, \
     generate_feed_quality_report, print_feed_quality_report
@@ -873,7 +875,10 @@ def _power_hour_gate(symbol: str, score: int, setup_type: str,
     After 15:00 ET: elite continuation setups only.
     After 15:15 ET: tighten score/spread further.
     Returns (allowed, reason).  Always passes before 15:00 ET.
+    In PAPER mode: bypassed entirely — collect baseline trade data at any score.
     """
+    if TRADING_MODE == "PAPER":
+        return True, "power_hour bypassed (paper mode — baseline data collection)"
     now_et = datetime.now(ET)
     mins   = now_et.hour * 60 + now_et.minute
     if mins < 15 * 60:
@@ -924,14 +929,29 @@ def _refresh_gappers_adaptive() -> None:
 
 # ── Bracket verification ──────────────────────────────────────────────────────
 
-def _verify_bracket(symbol: str) -> tuple[bool, str]:
+def _verify_bracket(symbol: str, order=None) -> tuple[bool, str]:
     """
     After entry fill: confirm stop-loss and take-profit child orders exist.
     If either is missing: flatten immediately, cancel all orders, log BRACKET_PROTECTION_FAILURE.
     Returns (bracket_ok, reason).
+
+    Checks order.legs first (immediate, from submit response) to avoid the timing window
+    where child orders are 'held' and not yet visible in get_orders().
+    Falls back to get_orders() with a longer wait as a secondary check.
     """
     import time as _time
-    _time.sleep(1.5)  # allow bracket legs to register
+
+    # Primary check: inspect order.legs directly from the submit response — no race condition
+    if order is not None:
+        legs = getattr(order, "legs", None) or []
+        if legs:
+            has_sl = any(getattr(l, "type", "") in ("stop", "stop_limit") for l in legs)
+            has_tp = any(getattr(l, "type", "") in ("limit", "take_profit") for l in legs)
+            if has_sl and has_tp:
+                return True, f"bracket ok (order.legs): {len(legs)} child order(s)"
+
+    # Fallback: poll get_orders() with a longer wait to let legs activate
+    _time.sleep(3)
     try:
         client = _client()
         orders = client.get_orders()
@@ -940,8 +960,8 @@ def _verify_bracket(symbol: str) -> tuple[bool, str]:
         has_sl = any(getattr(o, "type", "") in ("stop", "stop_limit") for o in legs)
         has_tp = any(getattr(o, "type", "") in ("limit", "take_profit") for o in legs)
         if has_sl and has_tp:
-            return True, f"bracket ok: {len(legs)} child order(s)"
-        # Bracket incomplete — flatten immediately
+            return True, f"bracket ok (get_orders): {len(legs)} child order(s)"
+        # Bracket genuinely incomplete — flatten immediately
         print(f"\n   [BRACKET_PROTECTION_FAILURE] {symbol}: "
               f"sl={has_sl} tp={has_tp} legs={len(legs)} — flattening")
         log_audit("BRACKET_PROTECTION_FAILURE", symbol, {
@@ -1136,6 +1156,7 @@ def _prescan():
         log_audit("PRESCAN_SKIPPED", details={"reason": f"intraday={alignment}"})
         return
 
+    clear_old_queue()
     log_audit("PRESCAN_START")
     candidates = scan_for_candidates()
     if not candidates:
@@ -1314,6 +1335,14 @@ def _scan_and_trade(paper_mode: bool = False):
     if not ok:
         print(f"   [RISK] Cannot trade: {reason}")
         log_audit("TRADE_BLOCKED", details={"reason": reason})
+        if "Max positions" in reason or "Daily loss limit" in reason:
+            _q = [c for c in (load_valid_candidates() or [])
+                  if c.get("tradeable") or c.get("watchlist")]
+            if _q:
+                queue_candidates(_q, reason)
+                print(f"   [MORNING QUEUE] {len(_q)} candidate(s) queued for tomorrow: "
+                      f"{', '.join(c['symbol'] for c in _q)}")
+                log_audit("MORNING_QUEUE", details={"queued": [c["symbol"] for c in _q], "reason": reason})
         return
 
     rolling   = get_recent_performance()
@@ -1334,7 +1363,8 @@ def _scan_and_trade(paper_mode: bool = False):
     if prescan:
         # Include watchlist candidates in rescore — they may have strengthened since prescan
         candidates = [c for c in prescan
-                      if (c.get("tradeable") or c.get("watchlist")) and c["symbol"] not in held]
+                      if (c.get("tradeable") or c.get("watchlist"))
+                      and (ALLOW_REENTRY or c["symbol"] not in held)]
         if not candidates:
             print("   No tradeable or watchlist prescan candidates available.")
             return
@@ -1361,7 +1391,8 @@ def _scan_and_trade(paper_mode: bool = False):
                 c["tradeable"]      = decayed >= eff_min
                 c["_effective_min"] = eff_min
 
-        candidates = [c for c in candidates if c.get("tradeable") and c["symbol"] not in held]
+        candidates = [c for c in candidates
+                      if c.get("tradeable") and (ALLOW_REENTRY or c["symbol"] not in held)]
         if not candidates:
             print("   No candidates passed re-score threshold.")
             return
@@ -1370,7 +1401,7 @@ def _scan_and_trade(paper_mode: bool = False):
     else:
         print("   No valid prescan — running fresh scan...")
         fresh    = scan_for_candidates()
-        filtered = [c for c in fresh if c["symbol"] not in held]
+        filtered = [c for c in fresh if ALLOW_REENTRY or c["symbol"] not in held]
         if not filtered:
             print("   No new momentum candidates.")
             return
@@ -1410,6 +1441,14 @@ def _scan_and_trade(paper_mode: bool = False):
         ok, portfolio, reason = can_trade()
         if not ok:
             print(f"   [RISK] {reason} — stopping.")
+            if "Max positions" in reason or "Daily loss limit" in reason:
+                idx       = candidates.index(pick)
+                remaining = candidates[idx:]
+                if remaining:
+                    queue_candidates(remaining, reason)
+                    print(f"   [MORNING QUEUE] {len(remaining)} remaining candidate(s) queued for tomorrow: "
+                          f"{', '.join(c['symbol'] for c in remaining)}")
+                    log_audit("MORNING_QUEUE", details={"queued": [c["symbol"] for c in remaining], "reason": reason})
             break
 
         # LOW_VOLUME / HIGH_VOL trade caps
@@ -1452,9 +1491,9 @@ def _scan_and_trade(paper_mode: bool = False):
 
         is_experimental = score < LIVE_BASE_SCORE
 
-        # Cross-agent duplicate check — block if IBKR already holds this symbol
+        # Cross-agent duplicate check — skipped in paper mode (CROSS_AGENT_GATE_ENABLED=False)
         taken, holder = is_symbol_taken(symbol)
-        if taken:
+        if CROSS_AGENT_GATE_ENABLED and taken:
             print(f"   [SKIP] {symbol}: already held by {holder} agent — duplicate exposure blocked")
             _reject(symbol, score, setup_type, "cross_agent_gate", "duplicate_exposure",
                     observed=holder, is_experimental=is_experimental)
@@ -1677,8 +1716,15 @@ def _scan_and_trade(paper_mode: bool = False):
                     continue
             else:
                 # Non-CHOPPY: only risky setups need ORB/pullback confirmation
+                # After 12:00 ET, experimental (override) entries above threshold no longer
+                # require ORB — ORB is a morning-only signal and VWAP/drift guards apply instead.
                 orb_pb_confirmed   = orb_breakout or pb_detected
-                needs_confirmation = score_below_min or is_experimental or low_vol_mode
+                try:
+                    from zoneinfo import ZoneInfo as _ZI2
+                    _afternoon = datetime.now(_ZI2("America/New_York")).hour >= 12
+                except Exception:
+                    _afternoon = False
+                needs_confirmation = score_below_min or low_vol_mode or (is_experimental and not _afternoon)
                 if needs_confirmation and not orb_pb_confirmed:
                     print(f"   [SKIP] {symbol}: risky setup requires ORB/pullback confirmation "
                           f"(score={score}, regime={regime}, experimental={is_experimental})")
@@ -2086,7 +2132,7 @@ def _scan_and_trade(paper_mode: bool = False):
                   f"orb={'Y' if orb_breakout else 'n'}  pullback={pullback_result.get('pullback_quality','N/A')}")
             print(f"   {shares}sh @ ${price:.2f} = ${cost:,.0f} | {reasoning}")
 
-            # Quote staleness guard — reject if snapshot is too old
+            # Quote staleness guard — refresh live if stale, only reject if refresh fails
             if TRADING_MODE == "LIVE":
                 from datetime import timezone as _tz
                 q_ts = pick.get("quote_fetched_at")
@@ -2094,12 +2140,27 @@ def _scan_and_trade(paper_mode: bool = False):
                     try:
                         age_s = (datetime.now(_tz.utc) - datetime.fromisoformat(q_ts)).total_seconds()
                         if age_s > QUOTE_STALE_SECS:
-                            print(f"   [STALE_QUOTE_REJECT] {symbol}: quote is {age_s:.0f}s old (>{QUOTE_STALE_SECS}s)")
-                            log_audit("STALE_QUOTE_REJECT", symbol, {
-                                "age_s": round(age_s, 1), "limit_s": QUOTE_STALE_SECS,
-                                "quote_fetched_at": q_ts,
-                            })
-                            continue
+                            print(f"   [STALE_QUOTE] {symbol}: quote {age_s:.0f}s old — fetching fresh quote...")
+                            fresh_q = get_rest_quote(symbol)
+                            if fresh_q and fresh_q.get("price", 0) > 0:
+                                old_price = price
+                                price     = fresh_q["price"]
+                                pick["price"]            = price
+                                pick["quote_fetched_at"] = datetime.now(_tz.utc).isoformat()
+                                pick["spread_pct"]       = fresh_q.get("spread_pct", spread_pct)
+                                spread_pct               = pick["spread_pct"]
+                                print(f"   [QUOTE_REFRESHED] {symbol}: ${old_price:.2f} → ${price:.2f} (fresh)")
+                                log_audit("QUOTE_REFRESHED", symbol, {
+                                    "old_price": old_price, "new_price": price,
+                                    "stale_age_s": round(age_s, 1),
+                                })
+                            else:
+                                print(f"   [STALE_QUOTE_REJECT] {symbol}: quote {age_s:.0f}s old, refresh failed — skipping")
+                                log_audit("STALE_QUOTE_REJECT", symbol, {
+                                    "age_s": round(age_s, 1), "limit_s": QUOTE_STALE_SECS,
+                                    "quote_fetched_at": q_ts, "refresh_attempted": True,
+                                })
+                                continue
                     except Exception:
                         pass
 
@@ -2122,17 +2183,20 @@ def _scan_and_trade(paper_mode: bool = False):
                 stop_pct=stop_pct, take_profit_pct=tp_pct,
             )
 
-            # Bracket verification — confirm SL+TP legs exist; flatten if missing
-            bv_ok, bv_reason = _verify_bracket(symbol)
+            # Log ORDER_PLACED immediately after buy fills — before bracket check,
+            # so the audit trail is always written even if bracket verification later fails.
+            record_entry(symbol, price)
+            claim_symbol(symbol)
+            log_audit("ORDER_PLACED", symbol, audit_details)
+
+            # Bracket verification — confirm SL+TP legs exist; flatten if missing.
+            # Pass the order object so legs can be checked directly without a timing race.
+            bv_ok, bv_reason = _verify_bracket(symbol, order=order)
             if not bv_ok:
                 log_audit("BRACKET_PROTECTION_FAILURE", symbol, {
                     "reason": bv_reason, "score": score, "setup_type": setup_type,
                 })
                 continue  # position already flattened inside _verify_bracket()
-
-            record_entry(symbol, price)
-            claim_symbol(symbol)
-            log_audit("ORDER_PLACED", symbol, audit_details)
 
             # Execution telemetry (spec point 9)
             fill_price = None
@@ -2275,7 +2339,12 @@ if __name__ == "__main__":
     elif args.close:
         _header("FORCE CLOSE — 3:44pm ET / 20:44 BST")
         import time
-        close_all_positions()
+        _eod_flag = Path(__file__).parent / "eod_close_disabled.flag"
+        if _eod_flag.exists():
+            print(f"   [EOD_CLOSE_DISABLED] Flag file present — skipping close. Delete {_eod_flag.name} to re-enable.")
+            log_audit("EOD_CLOSE_SKIPPED", details={"reason": "eod_close_disabled.flag present"})
+        else:
+            close_all_positions()
         log_audit("FORCE_CLOSE")
 
         # EOD verification — confirm fully flat, no overnight exposure

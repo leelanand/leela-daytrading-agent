@@ -28,6 +28,18 @@ PYTHON     = r"C:\Users\leela\AppData\Local\Programs\Python\Python312\python.exe
 OPS_LOG    = IBKR_DIR / "ops_fixes.log"
 BPM_URL    = "http://localhost:8765/api/bpm"
 RESTART_LOCK = IBKR_DIR / "ops_restart_lock.json"
+
+def _ibkr_port() -> int:
+    """Read IBKR_PORT from the IBKR .env so gateway checks follow paper/live switches."""
+    try:
+        for line in (IBKR_DIR / ".env").read_text().splitlines():
+            if line.startswith("IBKR_PORT="):
+                return int(line.split("=", 1)[1].strip())
+    except Exception:
+        pass
+    return 4001
+
+IBKR_PORT = _ibkr_port()
 RESTART_COOLDOWN_MINS = 12
 
 
@@ -125,7 +137,7 @@ def tool_get_bpm_status(_: dict) -> dict:
                 "fallback_note": "Dashboard unreachable — reading files directly",
                 "alpaca_log_age_mins": round(_log_age_mins(ALPACA_DIR / "trading_day.log"), 1),
                 "ibkr_log_age_mins":   round(_log_age_mins(IBKR_DIR   / "trading_day.log"), 1),
-                "gateway_up":          _port_open(4001)}
+                "gateway_up":          _port_open(IBKR_PORT)}
 
     # Distil to a token-efficient summary
     r = bpm.get("research",     {})
@@ -213,9 +225,9 @@ def tool_get_bpm_status(_: dict) -> dict:
 
 
 def tool_check_gateway(_: dict) -> dict:
-    up = _port_open(4001)
+    up = _port_open(IBKR_PORT)
     _log(f"Gateway check: {'UP' if up else 'DOWN'}", "INFO")
-    return {"reachable": up, "port": 4001}
+    return {"reachable": up, "port": IBKR_PORT}
 
 
 def tool_get_process_info(_: dict) -> dict:
@@ -470,6 +482,104 @@ def tool_log_action(args: dict) -> dict:
     return {"logged": True}
 
 
+def tool_read_trading_file(args: dict) -> dict:
+    """
+    Read the tail of a specific trading log or data file.
+    Use this to investigate scored-not-traded, high decision change rate,
+    validator anomalies, override blocks, or any pattern that needs evidence.
+    """
+    file_key = args["file"]
+    n_lines  = min(int(args.get("lines", 50)), 200)
+    today    = datetime.now().strftime("%Y-%m-%d")
+
+    file_map = {
+        "candidates":          ALPACA_DIR / "candidates.json",
+        "score_trace":         ALPACA_DIR / "claude_score_trace.jsonl",
+        "audit_log":           ALPACA_DIR / "audit.log",
+        "validator_flags":     ALPACA_DIR / "validator_flags.jsonl",
+        "score_overrides":     ALPACA_DIR / "score_overrides.jsonl",
+        "validator_challenge": ALPACA_DIR / "validator_challenge.jsonl",
+        "effectiveness_log":   ALPACA_DIR / "claude_effectiveness.jsonl",
+        "review_log":          ALPACA_DIR / "ops_review_log.jsonl",
+        "ibkr_review_log":     IBKR_DIR   / "ops_review_log.jsonl",
+        "ibkr_candidates":     IBKR_DIR   / "candidates.json",
+        "ibkr_score_trace":    IBKR_DIR   / "claude_score_trace.jsonl",
+        "ibkr_audit_log":      IBKR_DIR   / "audit.log",
+        "ibkr_validator_flags":     IBKR_DIR / "validator_flags.jsonl",
+        "ibkr_score_overrides":     IBKR_DIR / "score_overrides.jsonl",
+        "ibkr_validator_challenge": IBKR_DIR / "validator_challenge.jsonl",
+    }
+
+    path = file_map.get(file_key)
+    if not path:
+        return {"error": f"Unknown file key '{file_key}'. Available: {sorted(file_map.keys())}"}
+
+    try:
+        if not path.exists():
+            return {"exists": False, "file": file_key, "path": str(path)}
+
+        if path.suffix == ".json":
+            raw = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            return {"exists": True, "file": file_key, "content": raw}
+
+        # Text / JSONL — read tail
+        text      = path.read_text(encoding="utf-8", errors="replace")
+        all_lines = [l for l in text.splitlines() if l.strip()]
+        tail      = all_lines[-n_lines:]
+
+        if path.suffix == ".jsonl":
+            # Filter to today's entries when possible; fall back to raw
+            parsed_all = []
+            for line in tail:
+                try:
+                    obj = json.loads(line)
+                    # Only keep today's entries in the filtered set
+                    if obj.get("date", today) == today or obj.get("ts", "")[:10] == today:
+                        parsed_all.append(obj)
+                except Exception:
+                    parsed_all.append({"raw": line})
+            return {
+                "exists":       True,
+                "file":         file_key,
+                "today":        today,
+                "entries":      parsed_all,
+                "total_lines":  len(all_lines),
+            }
+        else:
+            # Plain text (audit.log) — filter today's lines
+            today_lines = [l for l in tail if today in l]
+            return {
+                "exists":      True,
+                "file":        file_key,
+                "today_lines": today_lines or tail[-30:],  # fallback to raw tail
+                "total_lines": len(all_lines),
+            }
+
+    except Exception as e:
+        return {"error": str(e), "file": file_key}
+
+
+def tool_write_baseline_entry(args: dict) -> dict:
+    """Write a trade learning or observation to paper_baseline_log.jsonl."""
+    entry = {
+        "ts":               datetime.now().isoformat(),
+        "symbol":           args.get("symbol", "SYSTEM"),
+        "action":           args.get("action", "observation"),
+        "score":            args.get("score"),
+        "outcome":          args.get("outcome"),
+        "learning":         args.get("learning", ""),
+        "correction_made":  args.get("correction_made"),
+    }
+    log_path = ALPACA_DIR / "paper_baseline_log.jsonl"
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+        _log(f"Baseline entry written: {entry['action']} / {entry['symbol']}", "INFO")
+        return {"written": True, "entry": entry}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def tool_complete(args: dict) -> dict:
     return args
 
@@ -485,7 +595,9 @@ TOOL_FNS = {
     "clear_cache":               tool_clear_cache,
     "run_agent_command":         tool_run_agent_command,
     "log_missed_opportunities":  tool_log_missed_opportunities,
+    "read_trading_file":         tool_read_trading_file,
     "log_action":                tool_log_action,
+    "write_baseline_entry":      tool_write_baseline_entry,
     "complete":                  tool_complete,
 }
 
@@ -497,7 +609,7 @@ TOOLS = [
     },
     {
         "name": "check_gateway",
-        "description": "Test whether IB Gateway is reachable on port 4001.",
+        "description": "Test whether IB Gateway is reachable on the configured port (reads IBKR_PORT from .env — 4002 for paper, 4001 for live).",
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
@@ -567,6 +679,53 @@ TOOLS = [
         },
     },
     {
+        "name": "read_trading_file",
+        "description": (
+            "Read the tail of a specific trading log or data file to investigate a pattern. "
+            "Use this BEFORE escalating any scored-not-traded, high decision-change-rate, "
+            "validator anomaly, or override-blocked issue to the human. "
+            "Available files: candidates, score_trace, audit_log, validator_flags, "
+            "score_overrides, validator_challenge, effectiveness_log, "
+            "ibkr_candidates, ibkr_score_trace, ibkr_audit_log, "
+            "ibkr_validator_flags, ibkr_score_overrides, ibkr_validator_challenge."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "File key from the available list above",
+                },
+                "lines": {
+                    "type": "integer",
+                    "description": "Number of lines to read from the tail (default 50, max 200)",
+                },
+            },
+            "required": ["file"],
+        },
+    },
+    {
+        "name": "write_baseline_entry",
+        "description": (
+            "Write a paper trading learning to paper_baseline_log.jsonl. "
+            "Call after any completed trade (entry+exit), any correction made, or at EOD for the day summary. "
+            "action: 'entry', 'exit', 'observation', 'correction', 'eod_summary'. "
+            "outcome: 'win', 'loss', 'flat', or null for non-trade entries."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbol":          {"type": "string"},
+                "action":          {"type": "string", "enum": ["entry", "exit", "observation", "correction", "eod_summary"]},
+                "score":           {"type": "number"},
+                "outcome":         {"type": "string", "enum": ["win", "loss", "flat"]},
+                "learning":        {"type": "string", "description": "What this trade teaches about model accuracy or gate behaviour"},
+                "correction_made": {"type": "string", "description": "Description of any code/config correction made, or null"},
+            },
+            "required": ["action", "learning"],
+        },
+    },
+    {
         "name": "log_action",
         "description": "Write an observation or action to the ops_fixes.log audit trail.",
         "input_schema": {
@@ -593,142 +752,94 @@ TOOLS = [
     },
 ]
 
-SYSTEM = """You are the autonomous OPS agent for the Leela live trading platform.
-Two live agents trade simultaneously: Alpaca (US stocks via Alpaca API) and IBKR (US stocks via Interactive Brokers).
-Your role: monitor the full Business Process Monitor every 8 minutes, reason about every pipeline section, fix what you can autonomously, and surface only what genuinely needs the human trader.
+SYSTEM = """Autonomous OPS agent for the Leela live trading platform (Alpaca + IBKR agents running simultaneously).
+Monitor every 8 min, fix autonomously, only escalate genuine blockers needing human action. Investigate before escalating.
 
-═══ TRADING SYSTEM OVERVIEW ═══
+PAPER TRADING MODE (2026-05-29): Both agents are in paper trading. IBKR uses port 4002. IBKR market data feed will likely return no prices — scanner auto-falls back to yfinance. Data section showing stale IBKR quotes is NORMAL and expected (STALE_QUOTE_PAPER). Do NOT escalate IBKR data issues. Alpaca uses paper API (paper-api.alpaca.markets). No live keys touched under any circumstances. Objective: test full pipeline end-to-end, create scoring baseline. User is away all day.
 
-Pipeline flow per agent:
-  Pre-market research → Prescan (score candidates) → Scan loop (entry decisions, every 5 min) →
-  Monitor loop (exits, every 30s) → Midday block (12-13 ET, no new entries) →
-  Afternoon prescan (12:45 ET) → Scan resumes 13:00 ET → Force close 15:44 ET → EOD reports
+PAPER TRADING RULES:
+- MAX_POSITIONS=10, POSITION_SIZE=8%(Alpaca)/5%(IBKR), MAX_TRADES=20, UTILISATION_CAP=95%
+- ALLOW_REENTRY=True (agents can re-buy same symbol), CROSS_AGENT_GATE=False (both can hold same symbol)
+- EOD close fires at 20:44 BST — both agents must be flat by 20:55
+- NO LIVE TRADING — do not touch live keys, do not change PAPER_TRADING setting
+- ALLOWED corrections: fix broken connections, restart stalled pipeline, fix import errors
+- NOT ALLOWED: change score thresholds, business rules, stop-loss %, position sizing
 
-Key thresholds:
-  LIVE min score: 78 | CHOPPY: 73 | LOW_VOLUME: 85 | HIGH_VOL: 80
-  PDT: 3 day trades / 5 days for accounts < $25k. DayTradesRemaining=-1 means unlimited.
-  Daily loss limit: 3% of account
+BASELINE LOGGING: After each completed trade cycle visible in audit_log (ORDER_PLACED+EXIT or force-close), call write_baseline_entry with learning about whether the score was accurate and which gates fired. At EOD after verify completes, write one eod_summary entry covering: trades count, win rate, which gates fired most, score accuracy observations.
 
-═══ HOW TO REASON OVER EACH BPM SECTION ═══
+PENDING REVIEWS: At the start of each cycle, call read_trading_file(file="review_log") and check for entries where review_date matches today. For each pending review: check the expected_outcome against current audit_log and BPM data, answer the review_questions from evidence, summarise findings in observations. This is how logic changes are validated the next trading day.
 
-RESEARCH: Is cache from today? Age < 4h = fresh, > 6h = stale. Was it consumed by prescan?
-  If stale and pipeline alive → clear_cache research_cache (pipeline will regenerate).
-  If not consumed → normal if prescan hasn't run yet; flag if prescan is done but research unused.
+PIPELINE: research(08:30ET) -> prescan(09:45ET) -> scan loop(5min) -> monitor(30s) -> midday block(12-13ET) -> afternoon prescan(12:45ET) -> force-close(15:44ET)
+THRESHOLDS: TRENDING_UP=75 CHOPPY=75 LOW_VOL=82 HIGH_VOL=80 NO_TRADE=99 WATCHLIST=50. PDT=-1=unlimited. Loss limit=3%.
 
-SCAN: Is prescan done? Scan count healthy for time of day?
-  Before 14:33 BST → prescan not expected yet, normal.
-  After 14:48 BST with 0 scans → investigate. Midday 17-18 BST → normal pause.
-  Skipped > executed scans → only a problem if reason is NOT regime/time-gate.
-  Stale candidates (>60 min old, pool not refreshed) → clear_cache candidates.
+BPM SECTION RULES (act on deviations only):
+RESEARCH: stale>6h+pipeline alive->clear research_cache. Not consumed before prescan ran->flag.
+SCAN: after 14:48BST+0scans->investigate. Midday 17-18BST pause=normal. Stale candidates>60min->clear candidates cache.
+SCORING: zero Claude calls after 5+scans->clear score_cache. Change rate 10-30%=healthy.
+DATA: ibkr_connected=False->CRITICAL check gateway. Quote age>60s=degraded. data_confidence<60=concerning.
+REGIME: NO_TRADE/CHOPPY/LOW_VOL blocking=correct behaviour. Regime cache stale>30min->clear regime_cache.
+RISK: pdt=0->notify. loss_limit_hit->notify. pdt=1->notify. pdt=-1=fine.
+EXECUTION: orders>0+fills=0->notify(broker issue). force_closed=False after 20:44BST->notify. verified_flat=False after 20:55BST->notify. slippage>0.15%=observation.
+COORDINATION: duplicate_trades->notify. Both stalled->notify. One stalled->restart it.
+INTEGRATION: coverage<80%=normal if gappers post-research. 0%=clear candidates+prescan if stalled.
+STRATEGY: <5 trades=no data. win_rate<30% with 5+trades=observation.
+MISSED: call log_missed_opportunities when missed_count>0 or rejected_missed>0. threshold_pct=4.0 (3.0 in CHOPPY/LOW_VOL).
 
-SCORING: No Claude calls after 5+ scans in trading window → score cache may be fully stale.
-  Clear score_cache if zero to_claude calls and zero cache_hits after multiple scans.
-  High local_rejects normal for weak markets. Decision change rate 10-30% is healthy.
+INVESTIGATE BEFORE ESCALATING - never notify about things you can diagnose yourself:
 
-DATA: ibkr_connected=False → CRITICAL — check gateway, notify if unreachable.
-  Quote age > 60s → degraded. Market data type != 1 (live) → flag but don't block.
-  Data confidence < 60 during active session → concerning.
+scored_not_traded: read_trading_file(candidates) -> find score/tradeable. read_trading_file(audit_log) -> find TRADE_REJECTED. read_trading_file(score_trace,lines=100) -> check final score vs effective_min. read_trading_file(validator_flags)+read_trading_file(score_overrides) -> check override attempts. Diagnose: score<min=threshold gate(normal); score>=min+TRADE_REJECTED=execution gate(check stage_rejected); score>=min+no rejection=timing/decay; challenge blocked=gap>cap. Put in observations. Escalate ONLY if unexplainable after all files.
 
-REGIME: NO_TRADE → all trading blocked, normal if market is genuinely bad.
-  CHOPPY → score gate raised, expected in choppy markets.
-  LOW_VOLUME → score gate raised, early session or low-activity day.
-  Regime cache stale (> 30 min with no updates) → clear_cache regime_cache.
+high_decision_change_rate(>30%): read_trading_file(effectiveness_log,lines=80) -> compare local vs claude scores. read_trading_file(score_trace,lines=60) -> check clustering near threshold. Diagnose: local>claude=local over-optimistic(normal weak market); claude 15+pts below systematically=calibration drift(note in obs); random=volatile day. Escalate ONLY if >80% for 3+ consecutive cycles with 15+pt systematic gap.
 
-RISK: pdt_remaining=0 → CRITICAL, notify human. loss_limit_hit → CRITICAL, notify human.
-  pdt_remaining=1 → WARNING, notify human (last trade reserved as buffer).
-  pdt_remaining=-1 → unlimited, all good.
+stale_quote: Agents auto-refresh stale quotes (QUOTE_REFRESHED in audit=working, silent). STALE_QUOTE_REJECT with refresh_attempted=True means refresh failed. read_trading_file(audit_log) to count. >3 today->notify(feed degraded). <=3=observation.
 
-EXECUTION: orders > 0 but fills = 0 → potential broker issue, notify human.
-  After 20:44 BST: force_closed should be True. If False → notify human.
-  After 20:55 BST: verified_flat should be True. If False → notify human.
-  Avg slippage > 0.15% → flag as observation.
-
-COORDINATION: duplicate_trades → notify human (both agents in same position).
-  Both agents stalled simultaneously → notify human.
-  One stalled → restart it.
-
-INTEGRATION: Missing research coverage < 80% → normal if gappers appeared after research ran.
-  0% coverage → prescan ran before research; clear candidates, trigger prescan if pipeline stalled.
-
-STRATEGY: < 5 trades today → insufficient data, don't judge.
-  Win rate < 30% with 5+ trades → flag as observation.
-  Consecutive losses pattern in today_trades → observation only, human decides.
-
-MISSED OPPORTUNITIES: Always call log_missed_opportunities when missed_count > 0 or rejected_missed > 0.
-  threshold_pct=4.0 is standard; use 3.0 in LOW_VOLUME/CHOPPY regimes where fewer big movers appear.
-  The tool handles three outcomes automatically:
-    a) Feedback log (always): appends to missed_feedback.jsonl for next-morning research enrichment
-    b) Late injection (if window open): writes late_additions.json so both agents rescore at next scan
-    c) Blocked injection (if window closed / NO_TRADE / loss_limit / PDT=0): feedback-only, note in observations
-  After calling: report what was logged and whether late additions were injected.
-  If all misses are from CHOPPY/LOW_VOLUME regime → note "regime correctly filtered these; logged for pattern analysis".
-  If misses were rejected_missed (had rejection reasons) → note the rejection reasons in observations.
-
-WHY_NOT_TRADING: Synthesises the above. If in_window=True and primary reason is "No candidates"
-  with 0 tradeable → normal, just no setups. Don't over-act on a quiet market day.
-
-═══ AUTONOMOUS ACTIONS ALLOWED ═══
-
-restart_pipeline:  log stale > 7 min AND gateway up (not during cooldown)
-restart_dashboard: port 8765 down
-clear_cache:       score_cache (scoring stuck), candidates (stale >2h in active session),
-                   regime_cache (stale >30 min), intraday_cache (always safe to clear)
-run_agent_command: --prescan or --research ONLY when pipeline stalled (log >5 min)
-log_action:        always — document observations
-
-═══ ALWAYS NOTIFY HUMAN ═══
-
-- IB Gateway unreachable (needs manual 2FA login — nothing we can do)
-- Daily loss limit hit
-- PDT = 0 (exhausted) or PDT = 1 (last trade)
-- Pipeline restart attempted but log still stale after 15s
+ALWAYS NOTIFY:
+- IB Gateway unreachable (needs 2FA)
+- loss_limit_hit or pdt=0 or pdt=1
+- Pipeline restart attempted but log still stale
 - Both agents stalled simultaneously
-- Orders placed but fills = 0 (broker execution failure)
-- Duplicate symbols traded by both agents on same day
-- Force close not confirmed after 20:50 BST
-- Dashboard restart attempted but port still down
+- orders>0 fills=0 (broker failure)
+- duplicate_trades
+- force_close not confirmed after 20:50BST
+- STALE_QUOTE_REJECT refresh_attempted=True more than 3 times today
+- Unexplainable scored_not_traded after reading all evidence files
 
-═══ DO NOT ACT ON (normal behaviour) ═══
+NEVER NOTIFY (normal behaviour):
+- Regime-gated scan skips. No trades in flat/low-vol. Midday block. IEX on Alpaca. research_consumed=False pre-prescan. <5 trades. IBKR error 300. Watchlist not trading. Elevated change rate alone. scored_not_traded alone.
 
-- Scans skipped because regime = CHOPPY / LOW_VOLUME / NO_TRADE → regime is working correctly
-- No trades when market is FLAT / LOW_VOLUME → correct, waiting for quality setups
-- Midday block 17:00-18:00 BST → no new entries, monitors still run
-- research_consumed=False before 14:45 BST → prescan hasn't run yet
-- Low win rate with < 5 trades → statistically meaningless
-- Error 300 "Can't find EId" → harmless IBKR message
-- Watchlist candidates not trading → they need score upgrade, monitoring correctly
-- Alpaca feed shows IEX → correct, Alpaca subscription is IEX (no real-time SIP)
+ACTIONS AVAILABLE: restart_pipeline(log>7min+gateway up), restart_dashboard(port 8765 down), clear_cache(score/candidates/regime/intraday), run_agent_command(--prescan/--research only when stalled), read_trading_file(investigate patterns), log_action(document), complete(finish cycle).
 
-═══ PROCESS ═══
-
-1. Call get_bpm_status — read everything carefully
-2. Work through each section systematically
-3. For unclear situations, call check_gateway or get_process_info
-4. Take the minimum intervention that resolves the issue
-5. Log every significant action and observation
-6. Call complete() with a clear summary"""
+PROCESS: 1.get_bpm_status 2.check each section 3.read_trading_file for patterns needing evidence 4.check_gateway/get_process_info for infra 5.minimum intervention 6.log observations 7.complete() with diagnoses in observations not notify_human"""
 
 
 # ── Agent loop ────────────────────────────────────────────────────────────────
 
-def run() -> dict:
+def run(prompt: str = "Run your monitoring cycle now.") -> dict:
     api_key = _load_env()
     if not api_key:
         _log("No ANTHROPIC_API_KEY found", "WARNING")
         return {"fixed": [], "notify_human": ["OPS agent: no API key"], "observations": []}
 
     client   = anthropic.Anthropic(api_key=api_key)
-    messages = [{"role": "user", "content": "Run your monitoring cycle now."}]
+    messages = [{"role": "user", "content": prompt}]
     result   = {"fixed": [], "notify_human": [], "observations": []}
 
     for _ in range(15):  # safety iteration cap
-        response = client.messages.create(
-            model       = "claude-sonnet-4-6",
-            max_tokens  = 4096,
-            system      = SYSTEM,
-            tools       = TOOLS,
-            messages    = messages,
-        )
+        try:
+            response = client.messages.create(
+                model       = "claude-haiku-4-5-20251001",
+                max_tokens  = 4096,
+                system      = SYSTEM,
+                tools       = TOOLS,
+                messages    = messages,
+            )
+        except Exception as _exc:
+            exc_str = str(_exc)
+            if "rate_limit" in exc_str or "429" in exc_str:
+                # Throttled — return silently; cron will retry in 8 minutes
+                _log("Rate limited by Anthropic API — skipping cycle (will retry next cron)", "WARNING")
+                return {"fixed": [], "notify_human": [], "observations": ["rate_limited_skipped"]}
+            raise  # non-rate-limit errors propagate normally
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason == "end_turn":
@@ -759,9 +870,15 @@ def run() -> dict:
 
 
 if __name__ == "__main__":
+    import argparse as _ap
+    _parser = _ap.ArgumentParser()
+    _parser.add_argument("--prompt", default="Run your monitoring cycle now.",
+                         help="Custom investigation prompt for the ops agent")
+    _args = _parser.parse_args()
+
     _log("=== OPS agent cycle start ===", "INFO")
     try:
-        result = run()
+        result = run(prompt=_args.prompt)
         fixed   = result.get("fixed", [])
         notify  = result.get("notify_human", [])
         obs     = result.get("observations", [])

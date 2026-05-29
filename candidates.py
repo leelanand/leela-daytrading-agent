@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from config import CANDIDATES_FILE, CANDIDATE_EXPIRY_MINS, DECAY_EXPIRE_MINS, DECAY_STRICT_EXPIRE
+from morning_queue import load_morning_queue
 
 LATE_ADDITIONS_FILE        = Path(__file__).parent / "late_additions.json"
 LATE_ADDITIONS_EXPIRY_MINS = 45
@@ -77,6 +78,31 @@ def load_valid_candidates() -> list[dict]:
                 added.append(sym)
         if added:
             print(f"   [LATE ADD] Injected {len(added)} ops-agent late addition(s): {', '.join(added)}")
+
+    # Seed overnight queue — symbols scored yesterday when budget was fully deployed
+    queued = load_morning_queue()
+    if queued:
+        existing = {c["symbol"] for c in candidates}
+        added_q  = []
+        for q in queued:
+            sym = q.get("symbol")
+            if sym and sym not in existing:
+                candidates.append({
+                    "symbol":        sym,
+                    "watchlist":     True,
+                    "tradeable":     False,
+                    "score":         0,
+                    "_from_queue":   True,
+                    "_queue_score":  q.get("score", 0),
+                    "_queue_reason": q.get("queue_reason", ""),
+                    "_is_top_gapper": True,
+                    "_age_mins":     0,
+                    "_stale":        False,
+                })
+                added_q.append(f"{sym}(prev={q.get('score', 0)})")
+                existing.add(sym)
+        if added_q:
+            print(f"   [MORNING QUEUE] Seeding {len(added_q)} overnight candidate(s): {', '.join(added_q)}")
 
     return candidates
 

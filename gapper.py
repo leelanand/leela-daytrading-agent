@@ -47,10 +47,11 @@ def run_gapper_scan(force: bool = False) -> list[str]:
                   + (f": {', '.join(cached)}" if cached else " (none above threshold)"))
             return cached
 
-    print(f"   [GAPPER] Scanning {len(GAPPER_UNIVERSE)} symbols for gap >= {GAPPER_MIN_GAP_PCT}%...")
+    universe = list(dict.fromkeys(GAPPER_UNIVERSE))  # deduplicate, preserve order
+    print(f"   [GAPPER] Scanning {len(universe)} symbols for gap >= {GAPPER_MIN_GAP_PCT}%...")
     try:
         raw = yf.download(
-            GAPPER_UNIVERSE,
+            universe,
             period="3d",
             interval="1d",
             progress=False,
@@ -64,7 +65,7 @@ def run_gapper_scan(force: bool = False) -> list[str]:
     results = []
     is_multi = isinstance(raw.columns, pd.MultiIndex)
 
-    for sym in GAPPER_UNIVERSE:
+    for sym in universe:
         try:
             if is_multi:
                 close = raw["Close"][sym].dropna()

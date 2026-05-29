@@ -26,7 +26,7 @@ ALPACA_BASE_URL = (
 MAX_POSITIONS     = 3
 POSITION_SIZE_PCT = 0.20
 STOP_LOSS_PCT     = 0.015
-TAKE_PROFIT_PCT   = 0.030
+TAKE_PROFIT_PCT   = 0.025
 FORCE_CLOSE_HOUR  = 15
 FORCE_CLOSE_MIN   = 44   # 15:44 ET / 20:44 BST — task fires at 20:44 BST
 
@@ -35,9 +35,9 @@ LIMIT_OFFSET_PCT  = 0.001      # buy limit = price * (1 + LIMIT_OFFSET_PCT)
 STAGED_ENTRY      = False      # True = 50% initial, 50% on confirmation
 
 # ── Scoring thresholds ─────────────────────────────────────────────────────────
-MIN_SCORE_TO_TRADE  = 78       # 0-100: minimum score to place a real order
-CHOPPY_MIN_SCORE    = 73       # lower bar in CHOPPY regime — flat market, fewer high-scorers
-WATCHLIST_SCORE     = 60       # 0-100: monitor but don't trade yet
+MIN_SCORE_TO_TRADE  = 75       # 0-100: minimum score to place a real order
+CHOPPY_MIN_SCORE    = 75       # lower bar in CHOPPY regime — flat market, fewer high-scorers
+WATCHLIST_SCORE     = 50       # 0-100: monitor but don't trade yet
 
 # ── Risk controls ──────────────────────────────────────────────────────────────
 DAILY_LOSS_LIMIT    = 0.03     # stop trading if down 3% on the day
@@ -156,29 +156,158 @@ REGIME_CACHE_FILE     = Path(__file__).parent / "regime_cache.json"
 
 # ── Gapper Discovery ───────────────────────────────────────────────────────────
 GAPPER_MIN_GAP_PCT  = 3.0    # minimum % gap to qualify
-GAPPER_TOP_N        = 8      # max dynamic gappers added to daily scan
+GAPPER_TOP_N        = 30     # max dynamic gappers added to daily scan
 GAPPER_CACHE_FILE   = Path(__file__).parent / "gappers_today.json"
 GAPPER_UNIVERSE = [
-    # AI / next-gen tech
-    "APP", "IONQ", "SOUN", "NBIS", "OKLO", "RKLB", "ASTS", "ACHR", "JOBY", "LUNR",
-    # Chinese ADRs
-    "BIDU", "BILI", "JD", "NIO", "XPEV", "LI",
-    # Fintech
-    "AFRM", "UPST", "LC", "OPEN", "OPFI",
-    # Health / biotech
-    "HIMS", "CELH", "RXRX", "ARWR", "CRSP", "NVAX", "MRNA",
-    # Clean energy
-    "FSLR", "ENPH", "RUN", "PLUG", "BE", "BLNK", "CHPT",
-    # Crypto miners (beyond MARA/COIN)
-    "RIOT", "CLSK", "HUT", "BTBT", "CORZ", "WULF",
-    # Consumer / e-commerce
-    "CHWY", "W", "ETSY", "SNAP", "PINS",
-    # Semis adjacent
-    "AMBA", "AEHR", "FORM", "ONTO",
-    # Gene editing / biotech
-    "FATE", "BEAM", "EDIT", "NTLA",
-    # High-vol ETFs
-    "ARKK", "ARKG", "LABU", "LABD", "TNA", "SPXL", "SPXS",
+    # Mega-cap tech
+    "AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "AMZN", "META", "AVGO", "TSLA", "ORCL",
+    "ADBE", "CRM", "CSCO", "IBM", "INTU", "NOW", "PANW", "FTNT", "SNPS", "CDNS",
+    # Semiconductors
+    "AMD", "QCOM", "TXN", "MU", "AMAT", "LRCX", "KLAC", "MRVL", "ARM", "ON",
+    "MPWR", "SWKS", "QRVO", "ENTG", "IPGP", "FORM", "ACLS", "CRUS", "MKSI", "COHU",
+    "AOSL", "SLAB", "POWI", "DIOD", "KLIC", "ONTO", "SITM", "AMBA", "AEHR", "SMCI",
+    "WOLF", "ALGM", "MTSI", "MCHP", "RMBS", "AAOI", "ACMR", "CAMT", "ICHR", "NVTS",
+    # Growth tech / SaaS / cloud
+    "DDOG", "ZS", "CRWD", "SNOW", "NET", "OKTA", "HUBS", "TWLO", "GTLB", "DOCU",
+    "VEEV", "BILL", "MNDY", "BRZE", "IOT", "SMAR", "ZI", "CFLT", "MDB", "ESTC",
+    "TTD", "ROKU", "PINS", "SNAP", "RDDT", "WDAY", "PCOR", "MANH", "GWRE", "CDAY",
+    "NTAP", "PSTG", "PRFT", "EVTC", "SPSC", "ALTR", "DSGX", "ASGN", "BKI", "PCOR",
+    "AZPN", "ALRM", "APPF", "JNPR", "FFIV", "VRNS", "QLYS", "SAIL", "TENB", "RPM",
+    # Crypto / blockchain
+    "COIN", "MARA", "RIOT", "CLSK", "BITF", "HUT", "BTBT", "CORZ", "WULF", "CIFR",
+    "MSTR", "SMLR", "IREN", "HIVE", "BITO", "GBTC",
+    # AI / Space / Quantum / next-gen
+    "IONQ", "QUBT", "RGTI", "RKLB", "ACHR", "OKLO", "ASTS", "JOBY", "LUNR", "SOUN",
+    "NBIS", "ARQQ", "QBTS", "SPCE", "ARCHER", "LILM", "EVTOL", "MKFG",
+    # Chinese tech ADRs
+    "BIDU", "BILI", "JD", "NIO", "XPEV", "LI", "PDD", "BABA", "NTES", "VNET",
+    "JMIA", "SE", "GRAB", "CODA", "KC", "LPSN", "LAIX",
+    # Internet / platforms / marketplaces
+    "UBER", "LYFT", "DASH", "W", "ETSY", "EBAY", "CHWY", "SHOP", "CPNG", "MELI",
+    "RBLX", "MTCH", "HOOD", "SOFI", "PLTR", "APP", "HIMS", "OPEN", "OPFI",
+    # Fintech / payments / neobanks
+    "AFRM", "UPST", "LC", "PSFE", "LMND", "ROOT", "FIS", "FISV", "GPN", "NU",
+    "REPAY", "FOUR", "PAGS", "STNE", "DLO", "FLYW", "FICO", "BR",
+    # Financials — large cap banks / brokers / insurance
+    "JPM", "BAC", "GS", "MS", "WFC", "C", "BLK", "SCHW", "AXP", "V",
+    "MA", "PYPL", "COF", "DFS", "SYF", "AIG", "PRU", "MET", "LNC", "VOYA",
+    "PFG", "TROW", "BEN", "IVZ", "NTRS", "STT", "BK", "FITB", "KEY", "HBAN",
+    # Financials — regional banks / alt-asset managers
+    "ZION", "CFG", "RF", "MTB", "TFC", "USB", "PNC", "RJF", "LPLA", "SEIC",
+    "CBRE", "CG", "APO", "KKR", "BX", "ARES", "OWL", "ACGL", "CB", "ALL",
+    "PGR", "TRV", "HIG", "AON", "MMC", "AJG", "WTW", "MFC", "GL", "UNM",
+    # Healthcare — large cap pharma / managed care
+    "LLY", "UNH", "JNJ", "ABBV", "MRK", "PFE", "TMO", "ABT", "DHR", "ISRG",
+    "BMY", "MDT", "AMGN", "BIIB", "GILD", "REGN", "VRTX", "HCA", "CVS", "CI",
+    "ELV", "HUM", "ZTS", "BSX", "BAX", "MOH", "CNC", "ANTM",
+    # Medical devices / diagnostics
+    "STE", "HOLX", "DXCM", "IDXX", "IQV", "PODD", "IRTC", "OMCL", "NVCR",
+    "INSP", "BDX", "RGEN", "ABMD", "TFX", "NVST", "NEOG", "TMDX", "AXNX",
+    "ATRC", "LIVN", "TELA", "NTRA", "GH", "EXAS",
+    # Biotech — clinical stage
+    "MRNA", "BNTX", "SGEN", "BEAM", "EDIT", "CRSP", "NTLA", "ACAD", "INCY",
+    "IONS", "PTCT", "RARE", "FOLD", "TGTX", "IOVA", "IMVT", "NBIX", "ARGX",
+    "LNTH", "RCKT", "SMMT", "NUVL", "VRNA", "RVNC", "FATE", "ARVN", "IMGO",
+    "SVRA", "HALO", "APLS", "ARRY", "TBPH", "KYMR", "VKTX", "RXRX", "ARWR",
+    "CELH", "BLUE", "DNLI", "MNTA", "ALKS", "JAZZ", "EXEL", "LGND", "NBIX",
+    "VYGR", "NKTR", "NVAX", "HALO", "PRAX", "ROIV", "KYMR", "PMVP",
+    # Consumer discretionary — restaurants / retail
+    "NKE", "SBUX", "MCD", "YUM", "CMG", "HD", "LOW", "LULU", "RH", "TGT",
+    "WMT", "COST", "DG", "DLTR", "ROST", "TJX", "DNUT", "SHAK", "WING", "TXRH",
+    "JACK", "EAT", "CAKE", "BJRI", "BURL", "FIVE", "OLLI", "BOOT", "ANF", "AEO",
+    "URBN", "GPS", "LEVI", "RL", "PVH", "HBI", "VF", "OXM",
+    # Auto / EV
+    "GM", "F", "TSLA", "RIVN", "LCID", "GOEV", "VRM", "KMX", "AN", "LAD",
+    "ABG", "SAH", "PAG",
+    # Consumer staples / food / beverage
+    "PG", "KO", "PEP", "PM", "MO", "MDLZ", "GIS", "K", "CPB", "CAG",
+    "SJM", "HRL", "CLX", "CHD", "CL", "EL", "ELF", "SKIN", "HSY", "STZ",
+    "MNST", "KDP", "TAP",
+    # Energy — oil / gas / services
+    "XOM", "CVX", "COP", "SLB", "HAL", "EOG", "PXD", "DVN", "MPC", "PSX",
+    "VLO", "OXY", "FANG", "APA", "KMI", "WMB", "LNG", "TDW", "RIG", "VAL",
+    "PTEN", "NE", "CIVI", "SM", "MTDR", "CRGY", "BATL", "PHX",
+    # Clean energy / renewables
+    "FSLR", "ENPH", "RUN", "PLUG", "BE", "BLNK", "CHPT", "NOVA", "MAXN",
+    "FLNC", "EVGO", "STEM", "SPWR", "NEP", "ARRY", "ORA", "GPRE",
+    # Industrials — defense / aerospace / machinery
+    "CAT", "DE", "HON", "GE", "LMT", "RTX", "NOC", "BA", "GD", "MMM",
+    "ITW", "PH", "ETN", "EMR", "ROK", "IR", "CARR", "OTIS", "TT", "ROP",
+    "AXON", "LDOS", "SAIC", "BAH", "KTOS", "CACI", "MXCT", "MRCY", "HII",
+    # Homebuilders / construction materials
+    "DHI", "LEN", "PHM", "TOL", "BLDR", "FBHS", "MAS", "SHW", "USG",
+    # Communications — streaming / media / telecom
+    "NFLX", "DIS", "CMCSA", "VZ", "T", "TMUS", "CHTR", "PARA", "WBD", "FOXA",
+    "FOX", "IAC", "ZD", "FUBO", "SPOT", "SIRI", "LUMN", "DISH", "ATUS",
+    # Materials — chemicals / specialty
+    "LIN", "APD", "ECL", "DD", "NEM", "GOLD", "AEM", "KGC", "NUE",
+    "X", "CLF", "ATI", "CMC", "STLD", "VALE", "SCCO", "FCX", "MP",
+    "LAC", "LTHM", "SQM", "ALB", "SBSW", "HL", "PAAS", "EXK", "AG",
+    # REITs
+    "AMT", "CCI", "PLD", "EQIX", "WELL", "ARE", "DLR", "SPG", "PSA", "AVB",
+    "EQR", "VTR", "BXP", "O", "WPC", "NNN", "STAG", "TRNO", "REXR", "IIPR",
+    "COLD", "SBAC", "EXR", "KIM", "CPT", "NSA", "LSI", "CUBE", "NHI", "OHI",
+    # Utilities
+    "NEE", "SO", "DUK", "AEP", "D", "PCG", "EXC", "ES", "AWK", "WEC",
+    "CNP", "AES", "NRG", "CEG", "BEP", "CWEN", "XEL", "ETR", "EIX", "PPL",
+    # Travel / hotels / airlines
+    "MAR", "HLT", "H", "ABNB", "EXPE", "BKNG", "TRIP",
+    "NCLH", "RCL", "CCL", "UAL", "DAL", "LUV", "AAL", "JBLU", "SAVE",
+    # Gaming / entertainment
+    "EA", "TTWO", "RBLX", "PLTK", "NCTY", "ZNGA",
+    # High-beta / meme
+    "GME", "AMC", "KOSS", "EXPR",
+    # Leveraged / inverse ETFs and sector ETFs
+    "SPY", "QQQ", "IWM", "DIA", "MDY", "TQQQ", "SQQQ", "SOXL", "SOXS",
+    "XLK", "XLF", "XLE", "XLV", "XLP", "XLI", "XLB", "XLU", "XLC", "XLRE", "XLY",
+    "GLD", "SLV", "GDX", "GDXJ", "USO", "TAN", "ICLN", "ARKK", "ARKG",
+    "ARKF", "WCLD", "BOTZ", "ROBO", "BUG", "CIBR", "LIT", "JETS", "MSOS",
+    "LABU", "LABD", "TNA", "SPXL", "SPXS", "UVXY", "VXX", "VIXY",
+    # Additional S&P 500 / Russell 1000 coverage
+    "ACN", "ADI", "ADM", "ADSK", "ADP", "AFL", "AIG", "AIZ", "AJG", "AKAM",
+    "ALB", "ALC", "ALGN", "ALLE", "AMAT", "AMCR", "AMD", "AME", "AMGN", "AMP",
+    "AMT", "ANSS", "AON", "AOS", "APA", "APD", "APH", "APTV", "ARE", "ATO",
+    "AVB", "AVGO", "AVY", "AXP", "AZO", "BA", "BAC", "BALL", "BAX", "BBY",
+    "BDX", "BEN", "BF", "BG", "BIO", "BKR", "BMRN", "BNTX", "BRO", "BSX",
+    "BWA", "BXP", "CAG", "CAH", "CARR", "CAT", "CB", "CBOE", "CBRE", "CCI",
+    "CCL", "CDNS", "CDW", "CE", "CEG", "CF", "CFG", "CHD", "CHRW", "CHTR",
+    "CI", "CINF", "CL", "CLX", "CMA", "CME", "CMG", "CMI", "CMS", "CNC",
+    "CNP", "COF", "COO", "COP", "CPB", "CPRT", "CRL", "CSCO", "CSX", "CTAS",
+    "CTLT", "CTRA", "CTSH", "CTVA", "CVX", "CZR", "D", "DAL", "DD", "DFS",
+    "DG", "DGX", "DHI", "DHR", "DIS", "DISH", "DLR", "DLTR", "DOV", "DPZ",
+    "DRE", "DRI", "DTE", "DUK", "DVA", "DVN", "DXC", "DXCM", "EA", "ECL",
+    "ED", "EFX", "EIX", "EL", "ELV", "EMN", "EMR", "ENPH", "EOG", "EPAM",
+    "EQR", "EQT", "ES", "ESS", "ETN", "ETR", "ETSY", "EVRG", "EW", "EXC",
+    "EXPD", "EXPE", "EXR", "F", "FAST", "FCX", "FDX", "FE", "FFIV", "FIS",
+    "FISV", "FITB", "FLT", "FMC", "FOX", "FOXA", "FRT", "FTNT", "FTV", "GD",
+    "GE", "GEHC", "GEN", "GILD", "GIS", "GL", "GLW", "GM", "GPC", "GPN",
+    "GRMN", "GS", "GWW", "HAL", "HAS", "HBAN", "HCA", "HD", "HES", "HIG",
+    "HII", "HLT", "HOLX", "HON", "HPE", "HPQ", "HRL", "HSIC", "HST", "HSY",
+    "HUM", "HWM", "IBM", "ICE", "IDXX", "IEX", "IFF", "ILMN", "INCY", "INTC",
+    "INTU", "INVH", "IP", "IPG", "IQV", "IR", "IRM", "ISRG", "IT", "ITW",
+    "IVZ", "J", "JBHT", "JCI", "JKHY", "JNJ", "JNPR", "JPM", "K", "KDP",
+    "KEY", "KEYS", "KHC", "KIM", "KLAC", "KMB", "KMI", "KMX", "KO", "KR",
+    "L", "LEN", "LH", "LHX", "LIN", "LKQ", "LLY", "LMT", "LNC", "LNT",
+    "LOW", "LRCX", "LUV", "LVS", "LW", "LYB", "LYV", "MA", "MAA", "MAR",
+    "MAS", "MCD", "MCHP", "MCK", "MCO", "MDLZ", "MDT", "MET", "MGM", "MHK",
+    "MKC", "MKTX", "MLM", "MMC", "MMM", "MNST", "MO", "MOH", "MOS", "MPC",
+    "MPWR", "MRK", "MRNA", "MS", "MSCI", "MSI", "MTB", "MTD", "MU", "NDAQ",
+    "NEE", "NEM", "NFLX", "NI", "NKE", "NOC", "NOW", "NRG", "NSC", "NTAP",
+    "NTRS", "NUE", "NVR", "NWL", "NWS", "NWSA", "O", "ODFL", "OGN", "OKE",
+    "OMC", "ON", "ORCL", "ORLY", "OTIS", "OXY", "PAYC", "PCAR", "PCG", "PEAK",
+    "PEG", "PEP", "PFE", "PFG", "PG", "PGR", "PH", "PKG", "PKI", "PLD",
+    "PM", "PNC", "PNR", "PNW", "PODD", "POOL", "PPG", "PPL", "PRU", "PSA",
+    "PSX", "PTC", "PWR", "PXD", "PYPL", "QCOM", "QRVO", "RCL", "REG", "REGN",
+    "RF", "RJF", "RL", "RMD", "ROK", "ROL", "ROP", "ROST", "RSG", "RTX",
+    "SBAC", "SBUX", "SCHW", "SHW", "SIVB", "SJM", "SLB", "SNA", "SNPS", "SO",
+    "SPG", "SPGI", "SRE", "STE", "STT", "STX", "STZ", "SWK", "SWKS", "SYF",
+    "SYK", "SYY", "T", "TAP", "TDG", "TDY", "TECH", "TEL", "TER", "TFC",
+    "TFX", "TGT", "TJX", "TMO", "TMUS", "TPR", "TRMB", "TROW", "TRV", "TSCO",
+    "TSN", "TT", "TTWO", "TXN", "TYL", "UAL", "UDR", "UHS", "ULTA", "UNH",
+    "UNP", "UPS", "URI", "USB", "V", "VFC", "VLO", "VMC", "VNO", "VRSK",
+    "VRSN", "VRTX", "VTR", "VZ", "WAB", "WAT", "WBA", "WDC", "WEC", "WELL",
+    "WFC", "WHR", "WM", "WMB", "WMT", "WRB", "WRK", "WST", "WTW", "WY",
+    "WYNN", "XEL", "XOM", "XYL", "YUM", "ZBH", "ZBRA", "ZION", "ZTS",
 ]
 
 # ── Intraday Momentum (1-min bars) ────────────────────────────────────────────
@@ -345,6 +474,7 @@ CLAUDE_RESEARCH_TOP_N = 10   # send only top N symbols by research interest to C
 # ── Claude Effectiveness Tracking ─────────────────────────────────────────────
 TRACK_CLAUDE_DECISION_DELTA   = True
 CLAUDE_EFFECTIVENESS_LOG_FILE = Path(__file__).parent / "claude_effectiveness.jsonl"
+CLAUDE_SCORE_TRACE_FILE       = Path(__file__).parent / "claude_score_trace.jsonl"
 
 # ── Trading Mode (PAPER or LIVE) ──────────────────────────────────────────────
 TRADING_MODE = os.getenv("TRADING_MODE", "PAPER" if os.getenv("PAPER_TRADING", "true").lower() == "true" else "LIVE").upper()
@@ -372,6 +502,19 @@ if hasattr(_mode, "MAX_POSITION_SIZE_PCT"):
     MAX_POSITION_SIZE_PCT = _mode.MAX_POSITION_SIZE_PCT
 if hasattr(_mode, "DAILY_LOSS_LIMIT"):
     DAILY_LOSS_LIMIT      = _mode.DAILY_LOSS_LIMIT
+if hasattr(_mode, "MAX_TRADES_PER_DAY"):
+    MAX_TRADES_PER_DAY    = _mode.MAX_TRADES_PER_DAY
+
+# Paper trading behaviour flags — off by default (live), overridden by config_paper.py
+CROSS_AGENT_GATE_ENABLED  = True   # live: block duplicate cross-agent exposure
+ALLOW_REENTRY             = False  # live: don't re-buy symbols already held
+MAX_PORTFOLIO_UTILISATION = 0.0    # live: disabled — use MAX_POSITIONS count instead
+if hasattr(_mode, "CROSS_AGENT_GATE_ENABLED"):
+    CROSS_AGENT_GATE_ENABLED  = _mode.CROSS_AGENT_GATE_ENABLED
+if hasattr(_mode, "ALLOW_REENTRY"):
+    ALLOW_REENTRY             = _mode.ALLOW_REENTRY
+if hasattr(_mode, "MAX_PORTFOLIO_UTILISATION"):
+    MAX_PORTFOLIO_UTILISATION = _mode.MAX_PORTFOLIO_UTILISATION
 
 # Quality override parameters
 QUALITY_OVERRIDE_MIN_RVOL       = _mode.QUALITY_OVERRIDE_MIN_RVOL
@@ -418,10 +561,22 @@ def get_min_score(regime: str = "base", setup_type: str | None = None) -> int:
 
 # ── Watchlist ──────────────────────────────────────────────────────────────────
 WATCHLIST = [
+    # Core momentum universe (original)
     "AAPL", "MSFT", "NVDA", "TSLA", "AMD", "META", "GOOGL", "AMZN", "NFLX", "AVGO",
     "COIN", "MARA", "PLTR", "SOFI", "HOOD", "RIVN",
     "SMCI", "MU", "QCOM", "INTC", "ARM", "MRVL",
     "DDOG", "ZS", "CRWD", "SNOW", "ROKU", "TTD", "UBER", "LYFT",
     "SPY", "QQQ", "SOXL", "TQQQ",
     "APP", "HIMS",
+    # Extended universe — liquid names for broader sweep
+    "ORCL", "ADBE", "CRM", "NOW", "PANW", "NET", "FTNT", "IBM",
+    "TXN", "KLAC", "LRCX", "AMAT", "ON", "MPWR",
+    "IONQ", "QUBT", "RGTI", "RKLB", "ACHR", "MSTR",
+    "JPM", "GS", "MS", "BAC", "V", "MA", "PYPL", "NU", "AFRM", "UPST",
+    "LLY", "PFE", "MRNA", "ABBV", "GILD", "AMGN", "REGN", "NVAX",
+    "XOM", "CVX", "OXY", "HAL", "SLB", "DVN",
+    "COST", "WMT", "TGT", "NKE", "LULU", "SBUX",
+    "CAT", "GE", "BA", "LMT", "RTX",
+    "IWM", "XLK", "XLF", "BITO",
+    "SOUN", "ENPH", "PLUG", "FCEL", "BLDP",
 ]

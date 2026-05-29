@@ -1,10 +1,12 @@
 """Position sizing, daily risk limits, per-candidate safety checks, and correlation gates."""
+from datetime import datetime
 import yfinance as yf
 from alpaca.trading.client import TradingClient
 from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, PAPER_TRADING,
     MAX_POSITIONS, POSITION_SIZE_PCT, DAILY_LOSS_LIMIT,
     MAX_TRADES_PER_DAY, MAX_SECTOR_EXPOSURE, MAX_SPREAD_PCT,
+    MAX_PORTFOLIO_UTILISATION,
     MIN_VOLUME_DAILY, GAP_TOLERANCE_PCT, KILL_SWITCH,
     THEME_MAP, MAX_THEME_POSITIONS,
     STOP_LOSS_PCT, TIGHT_STOP_PCT, TIGHT_STOP_REGIMES,
@@ -35,8 +37,22 @@ def can_trade() -> tuple[bool, float, str]:
         return False, portfolio, f"Daily loss limit hit ({daily_pnl_pct:.1%})"
 
     positions = client.get_all_positions()
-    if len(positions) >= MAX_POSITIONS:
-        return False, portfolio, f"Max positions ({MAX_POSITIONS}) reached"
+    if MAX_PORTFOLIO_UTILISATION > 0 and portfolio > 0:
+        deployed = sum(abs(float(p.market_value)) for p in positions)
+        utilisation = deployed / portfolio
+        if utilisation >= MAX_PORTFOLIO_UTILISATION:
+            return False, portfolio, (f"Portfolio utilisation {utilisation:.0%} >= "
+                                      f"{MAX_PORTFOLIO_UTILISATION:.0%} limit")
+        # Log recovery event when utilisation was previously at limit
+        from logger import today_audit as _ta
+        if any(r.get("details", {}).get("reason", "").startswith("Portfolio utilisation")
+               for r in _ta()):
+            from logger import log_audit as _la
+            _la("UTILISATION_RECOVERED", details={"utilisation": f"{utilisation:.1%}",
+                                                   "limit": f"{MAX_PORTFOLIO_UTILISATION:.0%}"})
+    else:
+        if len(positions) >= MAX_POSITIONS:
+            return False, portfolio, f"Max positions ({MAX_POSITIONS}) reached"
 
     trades_today = sum(1 for r in today_audit() if r["action"] == "ORDER_PLACED")
     if trades_today >= MAX_TRADES_PER_DAY:
@@ -69,13 +85,28 @@ def check_candidate_risk(candidate: dict, portfolio_value: float, prescan_price:
         if drift_pct > GAP_TOLERANCE_PCT:
             return False, f"Price drifted {drift_pct:.1f}% from prescan (max {GAP_TOLERANCE_PCT}%)"
 
-    # From-open move check — catches extended intraday moves since prescan
+    # From-open move check — morning session only (before 12:00 ET)
+    # After midday the stock's open price is irrelevant; VWAP extension + prescan drift guard instead.
     open_price = candidate.get("open_price")
     if open_price and open_price > 0:
-        move_from_open = (price - open_price) / open_price * 100
-        if move_from_open > MAX_MOVE_BEFORE_ENTRY_PCT:
-            return False, (f"Already moved {move_from_open:.1f}% from open at execution time "
-                           f"(max {MAX_MOVE_BEFORE_ENTRY_PCT}%)")
+        try:
+            from zoneinfo import ZoneInfo as _ZI
+            _et_now = datetime.now(_ZI("America/New_York"))
+        except Exception:
+            _et_now = datetime.utcnow()
+        _morning_session = _et_now.hour < 12
+        if _morning_session:
+            move_from_open = (price - open_price) / open_price * 100
+            gap_pct = abs(candidate.get("gap_pct", 0))
+            if gap_pct >= 20:
+                effective_max = min(MAX_MOVE_BEFORE_ENTRY_PCT * 3.0, 8.0)
+            elif gap_pct >= 10:
+                effective_max = min(MAX_MOVE_BEFORE_ENTRY_PCT * 2.0, 6.0)
+            else:
+                effective_max = MAX_MOVE_BEFORE_ENTRY_PCT
+            if move_from_open > effective_max:
+                return False, (f"Already moved {move_from_open:.1f}% from open at execution time "
+                               f"(max {effective_max:.1f}% for gap={gap_pct:.1f}%)")
 
     # Sector exposure check
     sector = candidate.get("sector", "Unknown")

@@ -14,7 +14,7 @@ import json
 import hashlib
 import math
 import yfinance as yf
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from config import (
     ANTHROPIC_API_KEY, MIN_SCORE_TO_TRADE, WATCHLIST_SCORE,
     SECTOR_ETFS, NEWS_MIN_IMPACT_SCORE,
@@ -24,7 +24,7 @@ from config import (
     CLAUDE_CACHE_RVOL_CHANGE_INVALIDATE_PCT,
     CLAUDE_CACHE_REGIME_CHANGE_INVALIDATE,
     CLAUDE_CACHE_NEW_CATALYST_INVALIDATE,
-    TRACK_CLAUDE_DECISION_DELTA, CLAUDE_EFFECTIVENESS_LOG_FILE,
+    TRACK_CLAUDE_DECISION_DELTA, CLAUDE_EFFECTIVENESS_LOG_FILE, CLAUDE_SCORE_TRACE_FILE,
     REGIME_CACHE_FILE,
     TRADING_MODE, PREFERRED_SPREAD_PCT,
     get_min_score,
@@ -32,10 +32,21 @@ from config import (
 from news_feed import get_all_news, news_for_symbol
 from event_risk import get_risk_summary
 from research import get_research
+from score_validator import run_validator
 
 _client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-SYSTEM = """You are an expert intraday day trader. Evaluate stocks for same-day momentum trades.
+SYSTEM = """You are an intraday trading analyst providing a SECOND OPINION — not the decision maker.
+
+The local system has already shortlisted these candidates using objective market structure data
+(gap %, relative volume, VWAP position, volume trend, spread). Your job is to identify:
+  1. Catalyst quality: how strong and reliable is the news/event driving this move?
+  2. Setup quality: does price action, volume profile, and market alignment support continuation?
+  3. Red flags: any hard disqualifiers (earnings landmine, manipulation signs, thin float traps)?
+
+Do NOT over-penalise because the market is choppy if local objective confirmations are strong.
+Do NOT reject based on soft factors (sector weakness, mild VIX) when momentum is confirmed.
+Your adjustments should reflect conviction delta, not repeat what the local scorer already measured.
 
 Score each candidate 0-100 using these weighted components:
 - momentum_score      (max 25): gap strength, direction, sustainability, move from open
@@ -63,8 +74,14 @@ Key rules:
 - research_score < 30: flag as fundamentally weak
 - red_flags present: include in red_flags array
 
+Also return three adjustment fields reflecting your net conviction delta:
+- catalyst_quality_adjustment: -10 to +10 (positive = strong catalyst, negative = weak/absent)
+- setup_quality_adjustment: -10 to +10 (positive = clean setup, negative = extended/choppy)
+- red_flag_adjustment: -20 to 0 (0 = no red flags; more negative = harder disqualifiers)
+- confidence: 0-100 (your confidence in this assessment given available data)
+
 Respond with a JSON array only — no markdown, no explanation outside the array.
-Each element must have exactly: {"symbol":"X","score":85,"momentum_score":22,"volume_score":18,"news_score":16,"market_trend_score":12,"volatility_score":8,"liquidity_score":9,"top_reasons":["up to 2 short phrases"],"red_flags":["up to 2 flags, empty if none"]}
+Each element must have exactly: {"symbol":"X","score":85,"momentum_score":22,"volume_score":18,"news_score":16,"market_trend_score":12,"volatility_score":8,"liquidity_score":9,"catalyst_quality_adjustment":5,"setup_quality_adjustment":3,"red_flag_adjustment":0,"confidence":80,"top_reasons":["up to 2 short phrases"],"red_flags":["up to 2 flags, empty if none"]}
 top_reasons: max 2 items, each ≤8 words. red_flags: max 2 items, empty array if none."""
 
 
@@ -324,6 +341,103 @@ def _log_effectiveness(entries: list[dict]):
         pass
 
 
+def _write_trace(entry: dict):
+    """Append one scoring trace entry immediately — not buffered."""
+    try:
+        with open(CLAUDE_SCORE_TRACE_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+
+def _make_trace_entry(ctx: dict, result: dict, source: str, regime: str, broad: dict,
+                      final_score: int | None = None, sanity_score: int | None = None,
+                      override_type: str | None = None,
+                      claude_raw_override: int | None = None) -> dict:
+    """Build a full trace entry capturing inputs, outputs, and context for one scoring event.
+
+    claude_raw_override: pass the original Claude raw score explicitly when result["score"]
+    has already been overwritten with the weighted final (e.g. for 'final' and 'cache' sources).
+    """
+    c        = ctx["c"]
+    r        = ctx["research"]
+    top_news = ctx["top_news"]
+    local    = ctx["local_score"]
+    # Use explicit override when provided; otherwise read from result (only valid for 'claude' source)
+    claude_raw = claude_raw_override if claude_raw_override is not None else (
+        result.get("score") if source not in ("local",) else None
+    )
+    score    = final_score if final_score is not None else result.get("score", local)
+    setup    = c.get("setup_type", "")
+    eff_min  = get_min_score(regime, setup)
+
+    cat_adj   = result.get("catalyst_quality_adjustment", 0)
+    setup_adj = result.get("setup_quality_adjustment", 0)
+    red_adj   = result.get("red_flag_adjustment", 0)
+    claude_underweight = (
+        local >= 75 and (sanity_score or 0) >= 80 and (claude_raw or 100) < 70
+    ) if source not in ("local",) else False
+
+    return {
+        "ts":          datetime.now(timezone.utc).isoformat(),
+        "date":        date.today().isoformat(),
+        "time":        datetime.now().strftime("%H:%M"),
+        "symbol":      ctx["sym"],
+        "source":      source,
+        "local_score": local,
+        "claude_score": claude_raw,
+        "claude_raw_score": claude_raw,
+        "final_score": score,
+        "sanity_score": sanity_score,
+        "delta":       (score - local) if source != "local" else 0,
+        "claude_adjustment": cat_adj + setup_adj + red_adj,
+        "catalyst_quality_adjustment": cat_adj,
+        "setup_quality_adjustment":    setup_adj,
+        "red_flag_adjustment":         red_adj,
+        "claude_confidence":           result.get("confidence"),
+        "claude_underweight":          claude_underweight,
+        "override_type":               override_type,
+        "claude_suppressed_trade":     (
+            claude_raw is not None and claude_raw < eff_min and local >= eff_min
+        ),
+        "components": {
+            "momentum":     result.get("momentum_score", 0),
+            "volume":       result.get("volume_score", 0),
+            "news":         result.get("news_score", 0),
+            "market_trend": result.get("market_trend_score", 0),
+            "volatility":   result.get("volatility_score", 0),
+            "liquidity":    result.get("liquidity_score", 0),
+        },
+        "top_reasons": result.get("top_reasons", []),
+        "red_flags":   result.get("red_flags", []),
+        "input": {
+            "gap":           c.get("gap_pct", 0),
+            "rvol":          c.get("rel_volume", 0),
+            "move":          c.get("move_from_open", 0),
+            "spread":        c.get("spread_pct", 0),
+            "bvwap":         c.get("below_vwap", False),
+            "vtrend":        c.get("vol_trend_ratio", 1.0),
+            "setup":         setup,
+            "bias":          r.get("pre_market_bias", "NEUTRAL"),
+            "rscore":        r.get("research_score", 50),
+            "rflags":        r.get("red_flags", []),
+            "news_impact":   ctx["top_impact"],
+            "top_headline":  top_news[0]["headline"][:80] if top_news else "",
+        },
+        "context": {
+            "regime":   regime,
+            "vix":      broad.get("vix", 0),
+            "spy_gap":  broad.get("SPY_gap", 0),
+            "qqq_gap":  broad.get("QQQ_gap", 0),
+            "iwm_gap":  broad.get("IWM_gap", 0),
+        },
+        "effective_min":       eff_min,
+        "tradeable":           score >= eff_min,
+        "watchlist":           WATCHLIST_SCORE <= score < eff_min,
+        "changed_decision":    (local >= eff_min) != (score >= eff_min) if source != "local" else False,
+    }
+
+
 # ── Claude batch call ─────────────────────────────────────────────────────────
 
 def _call_claude(
@@ -499,6 +613,7 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
                 results[sym] = _make_local_result(ctx, local, news_stats)
                 eff_log.append(_make_eff_entry(sym, local, None, now_str,
                                                cache_hit=False, local_only=True))
+                _write_trace(_make_trace_entry(ctx, results[sym], "local", regime, broad))
                 continue
 
         cache_key = f"{sym}:{ctx['hash']}"
@@ -510,11 +625,28 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
                 to_claude.append(ctx)
             else:
                 budget["cache_hits"] += 1
-                results[sym] = {**cached, "_news_stats": news_stats,
+                # Re-blend on cache hit in case local_score changed (new scan cycle)
+                cached_claude_raw = cached.get("_claude_raw_score", cached.get("score", local))
+                cached_sanity     = cached.get("_sanity_score", 60)
+                reblended = round(local * 0.65 + cached_claude_raw * 0.25 + cached_sanity * 0.10)
+                reblended = max(0, min(100, reblended))
+                cached_with_reblend = {**cached, "score": reblended}
+                results[sym] = {**cached_with_reblend, "_news_stats": news_stats,
                                 "_top_news_impact": ctx["top_impact"]}
-                eff_log.append(_make_eff_entry(sym, local,
-                                               cached.get("score"), now_str,
-                                               cache_hit=True, local_only=False))
+                cat_adj  = cached.get("catalyst_quality_adjustment", 0)
+                setup_adj = cached.get("setup_quality_adjustment", 0)
+                red_adj  = cached.get("red_flag_adjustment", 0)
+                eff_log.append(_make_eff_entry(sym, local, cached_claude_raw, now_str,
+                                               cache_hit=True, local_only=False,
+                                               final_score=reblended,
+                                               sanity_score=cached_sanity,
+                                               override_type=cached.get("_override_type"),
+                                               claude_adjustment=cat_adj + setup_adj + red_adj))
+                # Pass claude_raw_override so the trace records the original Claude raw score,
+                # not the reblended final score that now lives in cached_with_reblend["score"].
+                _write_trace(_make_trace_entry(ctx, cached_with_reblend, "cache", regime, broad,
+                                               final_score=reblended, sanity_score=cached_sanity,
+                                               claude_raw_override=cached_claude_raw))
             continue
 
         to_claude.append(ctx)
@@ -528,31 +660,124 @@ def analyse_candidates(candidates: list[dict]) -> list[dict]:
                 batch_results = _call_claude(batch, broad, etf_data, earn_warns, risk, vix)
                 for ctx in batch:
                     sym       = ctx["sym"]
+                    local     = ctx["local_score"]
                     p         = batch_results.get(sym,
-                                    _make_local_result(ctx, ctx["local_score"], news_stats))
+                                    _make_local_result(ctx, local, news_stats))
                     reasons   = p.get("top_reasons", [])
                     flags     = p.get("red_flags", [])
                     p["reasoning"] = "; ".join(reasons + [f"⚠ {f}" for f in flags]) or "no detail"
-                    cache_key = f"{sym}:{ctx['hash']}"
+
+                    claude_raw = int(p.get("score", local))
+
+                    # Write raw Claude trace — permanent record before any score blending
+                    raw_trace = _make_trace_entry(ctx, p, "claude", regime, broad)
+                    _write_trace(raw_trace)
+
+                    # Run validator to get objective sanity score
+                    vr = run_validator(raw_trace)
+                    sanity     = vr.get("sanity_score", 60)
+                    data_conf  = vr.get("data_confidence", 85)
+                    hard_fail  = vr.get("hard_fail", False)
+
+                    # ── Weighted final score: local anchors 65%, Claude adjusts 25%, sanity 10% ──
+                    final_score = round(local * 0.65 + claude_raw * 0.25 + sanity * 0.10)
+                    final_score = max(0, min(100, final_score))
+
+                    # ── Underweight detection: local strong, sanity confirms, Claude too low ──
+                    override_type = None
+                    claude_underweight = (local >= 75 and sanity >= 80 and claude_raw < 70)
+                    if claude_underweight:
+                        spread    = ctx["c"].get("spread_pct", 0)
+                        safety_ok = not hard_fail and spread <= 0.20 and data_conf >= 85
+                        if safety_ok:
+                            override_type = "CLAUDE_OVERRIDDEN"
+                            print(f"   [CLAUDE_OVERRIDDEN] {sym}: local={local} sanity={sanity} "
+                                  f"claude_raw={claude_raw} → final={final_score} "
+                                  f"(local anchored, Claude under-weighted)")
+                        else:
+                            override_type = "CLAUDE_LOW_CONFIDENCE_REJECT"
+                            print(f"   [CLAUDE_LOW_CONFIDENCE_REJECT] {sym}: local={local} "
+                                  f"sanity={sanity} claude_raw={claude_raw} "
+                                  f"— safety gates failed (hard_fail={hard_fail} spread={spread:.3f} "
+                                  f"data_conf={data_conf})")
+
+                    # ── Validator override bump (applies on top of weighted formula) ──
+                    elif vr["override_rules"]:
+                        orig_bump = vr["final_score"] - claude_raw
+                        if orig_bump > 0:
+                            final_score = min(100, final_score + orig_bump)
+                        override_type = "VALIDATOR_OVERRIDE"
+                        print(f"   [VALIDATOR_OVERRIDE] {sym}: claude_raw={claude_raw} "
+                              f"sanity={sanity} → final={final_score} "
+                              f"[Case-{vr['case']} vconf={vr['validator_confidence']}] "
+                              f"| {'; '.join(vr['override_rules'])}")
+
+                    # Validator logging
+                    if vr["severity"] in ("anomaly", "severe") or vr["hard_conflicts"]:
+                        print(f"   [VALIDATOR] {sym} Case-{vr['case']} "
+                              f"sanity={sanity} diff={vr['diff']} "
+                              f"conf={vr['validator_confidence']} ({vr['severity']})"
+                              + (": " + " | ".join(vr["anomalies"]) if vr["anomalies"] else ""))
+                    elif vr["anomalies"]:
+                        print(f"   [VALIDATOR] {sym}: " + " | ".join(vr["anomalies"]))
+
+                    if vr.get("challenge_run"):
+                        cr = vr["challenge_result"] or {}
+                        print(f"   [CHALLENGE] {sym}: revised={cr.get('revised_score')} "
+                              f"wrong={cr.get('was_original_score_wrong')} "
+                              f"conf={cr.get('confidence')} | {cr.get('reason','')[:80]}")
+
+                    # Apply final score to p
+                    p["score"]             = final_score
+                    p["_local_score"]      = local
+                    p["_claude_raw_score"] = claude_raw
+                    p["_sanity_score"]     = sanity
+                    p["_override_type"]    = override_type
+                    p["_override_rules"]   = vr.get("override_rules", [])
+                    p["_validator_case"]   = vr["case"]
+                    p["_validator_conf"]   = vr["validator_confidence"]
+
+                    # Cache stores final score and blending metadata
+                    cache_key   = f"{sym}:{ctx['hash']}"
                     cache_entry = {k: v for k, v in p.items() if not k.startswith("_")}
-                    cache_entry["_snap"]         = ctx["snap"]
-                    cache_entry["_local_score"]  = ctx["local_score"]
-                    changed = (ctx["local_score"] >= MIN_SCORE_TO_TRADE) != (p.get("score", 0) >= MIN_SCORE_TO_TRADE)
+                    cache_entry["_snap"]            = ctx["snap"]
+                    cache_entry["_local_score"]     = local
+                    cache_entry["_claude_raw_score"] = claude_raw
+                    cache_entry["_sanity_score"]    = sanity
+                    cache_entry["_override_type"]   = override_type
+                    changed = (local >= MIN_SCORE_TO_TRADE) != (final_score >= MIN_SCORE_TO_TRADE)
                     cache_entry["_claude_changed_decision"] = changed
                     score_cache[cache_key] = cache_entry
-                    result_entry = {**p, "_news_stats": news_stats, "_top_news_impact": ctx["top_impact"]}
-                    # PAPER AVOID override: tag if quality conditions are met for experimental trading
+
+                    # PAPER AVOID override
                     c_orig = ctx["c"]
+                    result_entry = {**p, "_news_stats": news_stats, "_top_news_impact": ctx["top_impact"]}
                     if (TRADING_MODE == "PAPER"
                             and ctx["research"].get("pre_market_bias") == "AVOID"
                             and c_orig.get("rel_volume", 0) >= 2.5
                             and c_orig.get("spread_pct", 0) <= 0.15
                             and ctx["top_impact"] >= 70):
                         result_entry["research_avoid_override_pending"] = True
+
+                    # Write final score trace — pass claude_raw explicitly since p["score"]
+                    # has already been overwritten with final_score at this point.
+                    _write_trace(_make_trace_entry(ctx, p, "final", regime, broad,
+                                                   final_score=final_score,
+                                                   sanity_score=sanity,
+                                                   override_type=override_type,
+                                                   claude_raw_override=claude_raw))
+
                     results[sym] = result_entry
-                    eff_log.append(_make_eff_entry(sym, ctx["local_score"],
-                                                   p.get("score"), now_str,
-                                                   cache_hit=False, local_only=False))
+                    cat_adj = p.get("catalyst_quality_adjustment", 0)
+                    setup_adj = p.get("setup_quality_adjustment", 0)
+                    red_adj = p.get("red_flag_adjustment", 0)
+                    eff_log.append(_make_eff_entry(
+                        sym, local, claude_raw, now_str,
+                        cache_hit=False, local_only=False,
+                        final_score=final_score, sanity_score=sanity,
+                        override_type=override_type,
+                        claude_adjustment=cat_adj + setup_adj + red_adj,
+                    ))
             except Exception as exc:
                 print(f"   [ANALYST] Claude batch error: {exc} — using local scores")
                 for ctx in batch:
@@ -622,22 +847,37 @@ def _make_local_result(ctx: dict, score: int, news_stats: dict) -> dict:
 def _make_eff_entry(
     sym: str, local: int, claude: int | None, time_str: str,
     cache_hit: bool, local_only: bool,
+    final_score: int | None = None,
+    sanity_score: int | None = None,
+    override_type: str | None = None,
+    claude_adjustment: int = 0,
 ) -> dict:
     local_tradeable  = local >= MIN_SCORE_TO_TRADE
     claude_tradeable = (claude >= MIN_SCORE_TO_TRADE) if claude is not None else None
+    fs               = final_score if final_score is not None else (claude or local)
+    final_tradeable  = fs >= MIN_SCORE_TO_TRADE
     changed = (
         (claude_tradeable != local_tradeable)
         if claude_tradeable is not None else False
     )
+    claude_underweight = (
+        local >= 75 and (sanity_score or 0) >= 80 and (claude or 100) < 70
+    ) if claude is not None else False
     return {
-        "date":                   date.today().isoformat(),
-        "time":                   time_str,
-        "symbol":                 sym,
-        "local_score":            local,
-        "claude_score":           claude,
-        "local_tradeable":        local_tradeable,
-        "claude_tradeable":       claude_tradeable,
+        "date":                    date.today().isoformat(),
+        "time":                    time_str,
+        "symbol":                  sym,
+        "local_score":             local,
+        "claude_score":            claude,
+        "final_score":             fs,
+        "sanity_score":            sanity_score,
+        "claude_adjustment":       claude_adjustment,
+        "local_tradeable":         local_tradeable,
+        "claude_tradeable":        claude_tradeable,
+        "final_tradeable":         final_tradeable,
         "claude_changed_decision": changed,
-        "cache_hit":              cache_hit,
-        "local_only":             local_only,
+        "claude_underweight":      claude_underweight,
+        "override_type":           override_type,
+        "cache_hit":               cache_hit,
+        "local_only":              local_only,
     }

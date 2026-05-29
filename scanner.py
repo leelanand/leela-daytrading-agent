@@ -196,15 +196,26 @@ def scan_for_candidates() -> list[dict]:
     extra    = [s for s in gappers if s not in WATCHLIST]
 
     # Primary: IBKR real-time; fallback: Alpaca snapshots
+    # Also falls back if IBKR returns tickers but all prices are 0/NaN (paper account — no data subscription)
+    _use_alpaca = False
     try:
         raw_snaps = _ibkr_snapshots(universe)
-        normalize = lambda sym, s: _normalize_ibkr(s, sym)
-        src_label = "IBKR"
+        valid_prices = sum(1 for t in raw_snaps.values()
+                          if t is not None and float(getattr(t, "last", 0) or getattr(t, "close", 0) or 0) > 0)
+        if valid_prices == 0:
+            _use_alpaca = True
+            print("   [SCAN] IBKR returned 0 valid prices (paper account — no data subscription) — falling back to Alpaca snapshots")
     except Exception as _e:
+        _use_alpaca = True
         print(f"   [SCAN] IBKR unavailable ({_e}) — falling back to Alpaca snapshots")
+
+    if _use_alpaca:
         raw_snaps = _snapshots(universe)
         normalize = lambda sym, s: _normalize_alpaca(s, sym)
         src_label = "Alpaca"
+    else:
+        normalize = lambda sym, s: _normalize_ibkr(s, sym)
+        src_label = "IBKR"
 
     print(f"   Scanning {len(universe)} symbols ({src_label})"
           + (f" + {len(extra)} gappers: {', '.join(extra)}" if extra else "") + "...")

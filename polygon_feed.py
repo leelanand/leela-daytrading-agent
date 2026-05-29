@@ -91,12 +91,16 @@ def validate_cross_provider(
     # Price divergence check (works for both real-time and bar-data mid)
     if mid > 0:
         price_diff_pct = abs(alpaca_price - mid) / mid * 100
-        if price_diff_pct > QUOTE_PRICE_MAX_DIFF_PCT:
+        # Bar/delayed data can lag by 15+ min — use a wider tolerance so stale quotes
+        # on volatile small-caps don't block legitimate trades.
+        effective_max_diff = QUOTE_PRICE_MAX_DIFF_PCT if has_rt else QUOTE_PRICE_MAX_DIFF_PCT * 4
+        if price_diff_pct > effective_max_diff:
             provider = secondary.get("provider", "secondary")
+            rt_label = "rt" if has_rt else "bar"
             return False, (
                 f"price_mismatch: alpaca ${alpaca_price:.2f} vs "
-                f"{provider} ${mid:.2f} "
-                f"({price_diff_pct:.3f}% > {QUOTE_PRICE_MAX_DIFF_PCT}% limit)"
+                f"{provider}[{rt_label}] ${mid:.2f} "
+                f"({price_diff_pct:.3f}% > {effective_max_diff:.2f}% limit)"
             ), secondary
 
     # Spread divergence check — only when real-time bid/ask is available
