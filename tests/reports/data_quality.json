@@ -1,0 +1,237 @@
+{
+  "agent": "alpaca",
+  "timestamp": "2026-05-30T13:00:01.538475",
+  "passed": 36,
+  "warned": 9,
+  "failed": 0,
+  "total": 45,
+  "status": "ALL_PASS",
+  "in_market_hours": false,
+  "details": [
+    {
+      "case": "feed_health_fresh",
+      "status": "WARN",
+      "detail": "age=992.4min (max 10)"
+    },
+    {
+      "case": "feed_health_not_critical",
+      "status": "PASS",
+      "detail": "status=ok"
+    },
+    {
+      "case": "feed_not_blocking",
+      "status": "PASS",
+      "detail": "block_live_trading=False"
+    },
+    {
+      "case": "quote_age_sla",
+      "status": "PASS",
+      "detail": "quote_age=0.1s (SLA=30s)"
+    },
+    {
+      "case": "alpaca_feed_ok",
+      "status": "PASS",
+      "detail": "alpaca=ok"
+    },
+    {
+      "case": "no_feed_issues",
+      "status": "PASS",
+      "detail": "0 issue(s): []"
+    },
+    {
+      "case": "candidates_file_exists",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "candidates_cache_fresh",
+      "status": "WARN",
+      "detail": "age=1043.6min"
+    },
+    {
+      "case": "all_candidates_have_required_fields",
+      "status": "PASS",
+      "detail": "5 candidates checked"
+    },
+    {
+      "case": "no_null_numeric_fields",
+      "status": "PASS",
+      "detail": "5 candidates checked"
+    },
+    {
+      "case": "price_positive",
+      "status": "PASS",
+      "detail": "5 candidates"
+    },
+    {
+      "case": "prev_close_positive",
+      "status": "PASS",
+      "detail": "5 candidates"
+    },
+    {
+      "case": "gap_pct_in_range",
+      "status": "PASS",
+      "detail": "gap_pct in (-50, 200)"
+    },
+    {
+      "case": "rel_volume_non_negative",
+      "status": "PASS",
+      "detail": "rel_volume >= 0"
+    },
+    {
+      "case": "spread_pct_sane",
+      "status": "PASS",
+      "detail": "spread_pct in [0, 10)"
+    },
+    {
+      "case": "today_volume_non_neg",
+      "status": "PASS",
+      "detail": "today_volume >= 0"
+    },
+    {
+      "case": "score_in_range",
+      "status": "PASS",
+      "detail": "score in [0, 100]"
+    },
+    {
+      "case": "bid_lt_ask",
+      "status": "PASS",
+      "detail": "5 candidates with bid/ask"
+    },
+    {
+      "case": "gap_pct_consistent_with_price",
+      "status": "PASS",
+      "detail": "0 inconsistent: []"
+    },
+    {
+      "case": "spread_pct_consistent_with_bidask",
+      "status": "PASS",
+      "detail": "0 inconsistent: []"
+    },
+    {
+      "case": "score_components_sum_to_total",
+      "status": "WARN",
+      "detail": "1 mismatch: ['SOFI(sub=64,total=58)']"
+    },
+    {
+      "case": "gapper_cache_date_matches_today",
+      "status": "WARN",
+      "detail": "cache_date=2026-05-29 today=2026-05-30"
+    },
+    {
+      "case": "gapper_cache_not_empty",
+      "status": "PASS",
+      "detail": "3 symbols"
+    },
+    {
+      "case": "gapper_details_have_required_fields",
+      "status": "PASS",
+      "detail": "missing fields in: []"
+    },
+    {
+      "case": "gapper_cache_fresh",
+      "status": "WARN",
+      "detail": "age=996.2min (max 90)"
+    },
+    {
+      "case": "research_cache_fresh",
+      "status": "WARN",
+      "detail": "age=17.4h (max 8h)"
+    },
+    {
+      "case": "research_has_symbols",
+      "status": "PASS",
+      "detail": "symbols section present"
+    },
+    {
+      "case": "research_has_macro",
+      "status": "PASS",
+      "detail": "macro section present"
+    },
+    {
+      "case": "research_has_timestamp",
+      "status": "PASS",
+      "detail": "generated_at present"
+    },
+    {
+      "case": "research_symbols_non_empty",
+      "status": "PASS",
+      "detail": "36 symbols researched"
+    },
+    {
+      "case": "audit_log_fields_present",
+      "status": "PASS",
+      "detail": "0/50 entries missing required fields"
+    },
+    {
+      "case": "audit_log_known_actions",
+      "status": "WARN",
+      "detail": "25 unknown: ['PRESCAN_DONE', 'SCAN_DONE', 'PRE_SUBMIT_REJECT']"
+    },
+    {
+      "case": "audit_log_has_recent_entries",
+      "status": "PASS",
+      "detail": "50 recent entries found"
+    },
+    {
+      "case": "trades_table_schema",
+      "status": "PASS",
+      "detail": "missing columns: set()"
+    },
+    {
+      "case": "historical_trade_sample",
+      "status": "WARN",
+      "detail": "only 0 trades \u2014 need 5+ for drift check"
+    },
+    {
+      "case": "alpaca_has_core_fields",
+      "status": "PASS",
+      "detail": "missing: set()"
+    },
+    {
+      "case": "ibkr_has_core_fields",
+      "status": "PASS",
+      "detail": "missing: set()"
+    },
+    {
+      "case": "schema_parity",
+      "status": "WARN",
+      "detail": "alpaca-only=[]  ibkr-only=['_override_rules', '_validator_case', '_validator_conf']"
+    },
+    {
+      "case": "feed_health_written_in_scanner",
+      "status": "PASS",
+      "detail": "feed_health.json written by scanner or agent"
+    },
+    {
+      "case": "quote_age_tracked",
+      "status": "PASS",
+      "detail": "quote staleness tracked (STALE_QUOTE / FEED_HEALTH_STALE_QUOTE_SECS)"
+    },
+    {
+      "case": "spread_validated_in_risk",
+      "status": "PASS",
+      "detail": "spread_pct checked in risk.py"
+    },
+    {
+      "case": "rel_volume_gated",
+      "status": "PASS",
+      "detail": "rel_volume gate in scanner or agent"
+    },
+    {
+      "case": "price_validated_in_risk",
+      "status": "PASS",
+      "detail": "price > 0 check in risk.py"
+    },
+    {
+      "case": "gap_pct_validated_in_scanner",
+      "status": "PASS",
+      "detail": "gap_pct filtered in scanner.py"
+    },
+    {
+      "case": "data_src_tagged_in_candidate",
+      "status": "PASS",
+      "detail": "_data_src provenance tag in scanner.py"
+    }
+  ]
+}

@@ -584,6 +584,42 @@ def tool_complete(args: dict) -> dict:
     return args
 
 
+def tool_get_data_quality_status(_: dict) -> dict:
+    """Read the latest data quality JSON reports from both agents."""
+    def _load(path: Path) -> dict:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _age_mins(path: Path) -> float:
+        try:
+            return (datetime.now() - datetime.fromtimestamp(path.stat().st_mtime)).total_seconds() / 60
+        except Exception:
+            return 9999.0
+
+    out = {}
+    for agent, base in [("alpaca", ALPACA_DIR), ("ibkr", IBKR_DIR)]:
+        r   = base / "tests" / "reports"
+        dq  = _load(r / "data_quality.json")
+        fh  = _load(base / "feed_health.json")
+        out[agent] = {
+            "data_quality": {
+                "passed": dq.get("passed"), "warned": dq.get("warned"),
+                "failed": dq.get("failed"), "status": dq.get("status"),
+                "in_market_hours": dq.get("in_market_hours"),
+                "age_mins": round(_age_mins(r / "data_quality.json"), 1),
+            },
+            "feed_health": {
+                "status": fh.get("status"), "quote_age_secs": fh.get("quote_age_secs"),
+                "block_live_trading": fh.get("block_live_trading"),
+                "issues": fh.get("issues", []),
+                "age_mins": round(_age_mins(base / "feed_health.json"), 1),
+            },
+        }
+    return out
+
+
 def tool_get_quality_status(_: dict) -> dict:
     """Read the latest quality/security JSON reports from both agents."""
     def _load(path: Path) -> dict:
@@ -648,6 +684,7 @@ TOOL_FNS = {
     "log_action":                tool_log_action,
     "write_baseline_entry":      tool_write_baseline_entry,
     "get_quality_status":        tool_get_quality_status,
+    "get_data_quality_status":   tool_get_data_quality_status,
     "complete":                  tool_complete,
 }
 
@@ -797,6 +834,16 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "get_data_quality_status",
+        "description": (
+            "Read the latest data quality JSON reports and feed_health for both agents from disk. "
+            "Returns passed/warned/failed counts, overall status, in_market_hours flag, and feed health. "
+            "Call when you want to check data pipeline health: stale feeds, field gaps, schema drift, "
+            "or any time data_quality.json age_mins is high."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "complete",
         "description": "End the monitoring cycle with a structured summary.",
         "input_schema": {
@@ -875,9 +922,19 @@ QUALITY GATE RULES (call get_quality_status once per cycle — it's cheap):
 - Reports older than 48h -> add to observations (run_checks.ps1 may not have run)
 - Reports missing (age_mins=9999) first cycle of week -> observation; after that escalate
 
+DATA QUALITY GATE RULES (call get_data_quality_status once per cycle):
+- data_quality.failed>0 during market hours -> ALWAYS NOTIFY (bad data may cause bad trades)
+- data_quality.failed>0 outside market hours -> observation (may be stale cache, normal)
+- feed_health.block_live_trading=True -> ALWAYS NOTIFY (feed gate is blocking execution)
+- feed_health.status=CRITICAL or feed_health.issues non-empty -> NOTIFY if in market hours
+- data_quality.warned>10 during market hours -> observation (elevated warnings, investigate)
+- data_quality warned outside market hours = NORMAL (stale gapper cache, research, feed — all expected)
+- data_quality.age_mins>120 during market hours -> observation (tests not running)
+- data_quality missing (age_mins=9999) after first trading cycle -> escalate
+
 ACTIONS AVAILABLE: restart_pipeline(log>7min+gateway up), restart_dashboard(port 8765 down), clear_cache(score/candidates/regime/intraday), run_agent_command(--prescan/--research only when stalled), read_trading_file(investigate patterns), log_action(document), complete(finish cycle).
 
-PROCESS: 1.get_bpm_status 2.get_quality_status 3.check each BPM section 4.read_trading_file for patterns needing evidence 5.check_gateway/get_process_info for infra 6.minimum intervention 7.log observations 8.complete() with diagnoses in observations not notify_human"""
+PROCESS: 1.get_bpm_status 2.get_quality_status 3.get_data_quality_status 4.check each BPM section 5.read_trading_file for patterns needing evidence 6.check_gateway/get_process_info for infra 7.minimum intervention 8.log observations 9.complete() with diagnoses in observations not notify_human"""
 
 
 # ── Agent loop ────────────────────────────────────────────────────────────────

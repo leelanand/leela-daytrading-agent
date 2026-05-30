@@ -441,6 +441,7 @@ def _quality_status() -> dict:
     alpa_sec     = _load(base / "security_scan.json")
     alpa_pre     = _load(base / "pre_session_check.json")
     alpa_suite   = _load(base / "alpaca_suite_summary.json")
+    alpa_dq      = _load(base / "data_quality.json")
     checks_sum   = _load(base / "checks_summary.json")
 
     ibkr_unit     = _load(ibkr / "test_phase1_unit.json")
@@ -449,49 +450,57 @@ def _quality_status() -> dict:
     ibkr_sec      = _load(ibkr / "security_scan.json")
     ibkr_pre      = _load(ibkr / "pre_session_check.json")
     ibkr_ready    = _load(ibkr / "trading_agent_readiness_report.json")
+    ibkr_dq       = _load(ibkr / "data_quality.json")
+
+    def _dq(d: dict) -> dict:
+        if not d:
+            return {"passed": "?", "warned": "?", "failed": "?", "status": "?"}
+        return {"passed": d.get("passed","?"), "warned": d.get("warned","?"),
+                "failed": d.get("failed","?"), "status": d.get("status","?")}
 
     return {
-        "last_run":       checks_sum.get("timestamp", "never"),
-        "overall_status": checks_sum.get("status", "not_run"),
-        "failures":       checks_sum.get("failures", 0),
+        "last_run":       checks_sum.get("timestamp", "never") if checks_sum else "never",
+        "overall_status": checks_sum.get("status", "not_run")  if checks_sum else "not_run",
+        "failures":       checks_sum.get("failures", 0)        if checks_sum else 0,
         "alpaca": {
-            "unit_tests":   {"passed": alpa_unit.get("cases_passed", alpa_unit.get("passed","?")),
-                             "total":  alpa_unit.get("cases_run",    alpa_unit.get("total","?")),
-                             "status": alpa_unit.get("status","?")},
-            "rules":        {"passed": alpa_rules.get("passed","?"), "total": alpa_rules.get("total","?"),
-                             "status": alpa_rules.get("status","?")},
-            "pre_session":  {"passed": alpa_pre.get("p0_passed","?"), "status": alpa_pre.get("status","?")},
-            "integration":  {"passed": alpa_suite.get("total_passed", alpa_suite.get("passed","?")),
-                             "total":  alpa_suite.get("total_run",    alpa_suite.get("total","?")),
-                             "score":  alpa_suite.get("overall_score", alpa_suite.get("score","?"))},
-            "code_quality": {"pylint": alpa_quality.get("pylint",{}).get("score","?"),
-                             "flake8_errors": alpa_quality.get("flake8",{}).get("errors","?"),
-                             "complexity": alpa_quality.get("radon",{}).get("max_complexity","?"),
-                             "status": alpa_quality.get("summary",{}).get("overall","?"),
-                             "pass": alpa_quality.get("summary",{}).get("overall_pass","?")},
-            "security":     {"blocking": alpa_sec.get("bandit",{}).get("blocking_count","?"),
-                             "cves": alpa_sec.get("pip_audit",{}).get("high_severity_count","?"),
-                             "pass": alpa_sec.get("summary",{}).get("overall_pass","?")},
+            "unit_tests":    {"passed": alpa_unit.get("cases_passed", alpa_unit.get("passed","?")),
+                              "total":  alpa_unit.get("cases_run",    alpa_unit.get("total","?")),
+                              "status": alpa_unit.get("status","?")},
+            "rules":         {"passed": alpa_rules.get("passed","?"), "total": alpa_rules.get("total","?"),
+                              "status": alpa_rules.get("status","?")},
+            "pre_session":   {"passed": alpa_pre.get("p0_passed","?"), "status": alpa_pre.get("status","?")},
+            "data_quality":  _dq(alpa_dq),
+            "integration":   {"passed": alpa_suite.get("total_passed", alpa_suite.get("passed","?")),
+                              "total":  alpa_suite.get("total_run",    alpa_suite.get("total","?")),
+                              "score":  alpa_suite.get("overall_score", alpa_suite.get("score","?"))},
+            "code_quality":  {"pylint": alpa_quality.get("pylint",{}).get("score","?"),
+                              "flake8_errors": alpa_quality.get("flake8",{}).get("errors","?"),
+                              "complexity": alpa_quality.get("radon",{}).get("max_complexity","?"),
+                              "status": alpa_quality.get("summary",{}).get("overall","?"),
+                              "pass": alpa_quality.get("summary",{}).get("overall_pass","?")},
+            "security":      {"blocking": alpa_sec.get("bandit",{}).get("blocking_count","?"),
+                              "cves": alpa_sec.get("pip_audit",{}).get("high_severity_count","?"),
+                              "pass": alpa_sec.get("summary",{}).get("overall_pass","?")},
         },
         "ibkr": {
-            "unit_tests":   {"passed": ibkr_unit.get("cases_passed", ibkr_unit.get("passed","?")),
-                             "total":  ibkr_unit.get("cases_run",    ibkr_unit.get("total","?")),
-                             "status": ibkr_unit.get("status","?")},
-            "rules":        {"passed": ibkr_rules.get("passed","?"), "total": ibkr_rules.get("total","?"),
-                             "status": ibkr_rules.get("status","?")},
-            "pre_session":  {"passed": ibkr_pre.get("p0_passed","?"), "status": ibkr_pre.get("status","?")},
-            "integration":  {"passed": None,
-                             "total":  None,
-                             "status": ibkr_ready.get("overall_status","?"),
-                             "mode":   ibkr_ready.get("allowed_mode","?")},
-            "code_quality": {"pylint": ibkr_quality.get("pylint",{}).get("score","?"),
-                             "flake8_errors": ibkr_quality.get("flake8",{}).get("errors","?"),
-                             "complexity": ibkr_quality.get("radon",{}).get("max_complexity","?"),
-                             "status": ibkr_quality.get("summary",{}).get("overall","?"),
-                             "pass": ibkr_quality.get("summary",{}).get("overall_pass","?")},
-            "security":     {"blocking": ibkr_sec.get("bandit",{}).get("blocking_count","?"),
-                             "cves": ibkr_sec.get("pip_audit",{}).get("high_severity_count","?"),
-                             "pass": ibkr_sec.get("summary",{}).get("overall_pass","?")},
+            "unit_tests":    {"passed": ibkr_unit.get("cases_passed", ibkr_unit.get("passed","?")),
+                              "total":  ibkr_unit.get("cases_run",    ibkr_unit.get("total","?")),
+                              "status": ibkr_unit.get("status","?")},
+            "rules":         {"passed": ibkr_rules.get("passed","?"), "total": ibkr_rules.get("total","?"),
+                              "status": ibkr_rules.get("status","?")},
+            "pre_session":   {"passed": ibkr_pre.get("p0_passed","?"), "status": ibkr_pre.get("status","?")},
+            "data_quality":  _dq(ibkr_dq),
+            "integration":   {"passed": None, "total": None,
+                              "status": ibkr_ready.get("overall_status","?") if ibkr_ready else "?",
+                              "mode":   ibkr_ready.get("allowed_mode","?")   if ibkr_ready else "?"},
+            "code_quality":  {"pylint": ibkr_quality.get("pylint",{}).get("score","?"),
+                              "flake8_errors": ibkr_quality.get("flake8",{}).get("errors","?"),
+                              "complexity": ibkr_quality.get("radon",{}).get("max_complexity","?"),
+                              "status": ibkr_quality.get("summary",{}).get("overall","?"),
+                              "pass": ibkr_quality.get("summary",{}).get("overall_pass","?")},
+            "security":      {"blocking": ibkr_sec.get("bandit",{}).get("blocking_count","?"),
+                              "cves": ibkr_sec.get("pip_audit",{}).get("high_severity_count","?"),
+                              "pass": ibkr_sec.get("summary",{}).get("overall_pass","?")},
         },
     }
 
@@ -1631,6 +1640,15 @@ function renderQuality(q) {
         <tr><td style="padding:2px 8px;color:#e6edf3">Pre-Session Gate</td>
             ${cell(d.pre_session?.passed)}
             ${passCell(d.pre_session?.status)}</tr>
+        <tr><td style="padding:2px 8px;color:#e6edf3">Data Quality</td>
+            ${d.data_quality?.status === '?'
+              ? `<td style="color:#8b949e;padding:2px 8px">—</td>`
+              : cell(`${d.data_quality?.passed}✓ ${d.data_quality?.warned}⚠ ${d.data_quality?.failed}✗`)}
+            ${d.data_quality?.status === 'ALL_PASS'
+              ? `<td style="color:#3fb950;padding:2px 8px">PASS</td>`
+              : d.data_quality?.status === 'FAILURES'
+              ? `<td style="color:#f85149;padding:2px 8px">FAIL</td>`
+              : `<td style="color:#8b949e;padding:2px 8px">${d.data_quality?.status ?? '—'}</td>`}</tr>
         ${d.integration ? `<tr><td style="padding:2px 8px;color:#e6edf3">Full Test Suite</td>
             ${d.integration.passed != null
               ? cell(d.integration.passed + '/' + d.integration.total)
