@@ -1,0 +1,91 @@
+{
+  "test_id": "06",
+  "test_name": "Cross-Agent Code Parity",
+  "timestamp": "2026-05-30T10:45:46.445738+00:00",
+  "status": "PASS",
+  "cases_run": 19,
+  "cases_passed": 19,
+  "cases_failed": 0,
+  "cases_deferred": 0,
+  "score": 1.0,
+  "details": [
+    {
+      "case": "both_have_has_catalyst",
+      "status": "PASS"
+    },
+    {
+      "case": "both_have_float_tier",
+      "status": "PASS"
+    },
+    {
+      "case": "both_cap_at_25",
+      "status": "PASS"
+    },
+    {
+      "case": "both_have_catalyst_boost",
+      "status": "PASS"
+    },
+    {
+      "case": "both_have_catalyst_kws",
+      "status": "PASS"
+    },
+    {
+      "case": "both_have_symbol_info",
+      "status": "PASS"
+    },
+    {
+      "case": "both_momentum_bypass",
+      "status": "PASS"
+    },
+    {
+      "case": "both_fb_bypass",
+      "status": "PASS"
+    },
+    {
+      "case": "both_hod_bypass",
+      "status": "PASS"
+    },
+    {
+      "case": "both_scan_capped",
+      "status": "PASS"
+    },
+    {
+      "case": "both_hod_consolidation",
+      "status": "PASS"
+    },
+    {
+      "case": "both_orb_pb_confirmed",
+      "status": "PASS"
+    },
+    {
+      "case": "force_close_min_same",
+      "status": "PASS"
+    },
+    {
+      "case": "force_close_hour_same",
+      "status": "PASS"
+    },
+    {
+      "case": "stop_loss_pct_same",
+      "status": "PASS"
+    },
+    {
+      "case": "take_profit_pct_same",
+      "status": "PASS"
+    },
+    {
+      "case": "min_gap_pct_same",
+      "status": "PASS"
+    },
+    {
+      "case": "max_spread_pct_same",
+      "status": "PASS"
+    },
+    {
+      "case": "min_rel_volume_same",
+      "status": "PASS"
+    }
+  ],
+  "defects_found": [],
+  "notes": ""
+}

@@ -1,0 +1,73 @@
+{
+  "test_id": "02",
+  "test_name": "Alpaca Snapshot Normalization",
+  "timestamp": "2026-05-30T10:45:46.445738+00:00",
+  "status": "PASS",
+  "cases_run": 14,
+  "cases_passed": 14,
+  "cases_failed": 0,
+  "cases_deferred": 0,
+  "score": 1.0,
+  "details": [
+    {
+      "case": "price_correct",
+      "status": "PASS"
+    },
+    {
+      "case": "prev_close_correct",
+      "status": "PASS"
+    },
+    {
+      "case": "today_vol_correct",
+      "status": "PASS"
+    },
+    {
+      "case": "bid_correct",
+      "status": "PASS"
+    },
+    {
+      "case": "ask_correct",
+      "status": "PASS"
+    },
+    {
+      "case": "day_high_correct",
+      "status": "PASS"
+    },
+    {
+      "case": "day_low_correct",
+      "status": "PASS"
+    },
+    {
+      "case": "open_price_correct",
+      "status": "PASS"
+    },
+    {
+      "case": "vwap_correct",
+      "status": "PASS"
+    },
+    {
+      "case": "data_src_alpaca",
+      "status": "PASS"
+    },
+    {
+      "case": "no_quote_bid_fallback",
+      "status": "PASS",
+      "detail": "bid=49.9500 expected=49.9500"
+    },
+    {
+      "case": "no_quote_ask_fallback",
+      "status": "PASS"
+    },
+    {
+      "case": "no_bar_fallback_values",
+      "status": "PASS",
+      "detail": "vol=0 high=50.0 open=47.0"
+    },
+    {
+      "case": "exception_returns_none",
+      "status": "PASS"
+    }
+  ],
+  "defects_found": [],
+  "notes": ""
+}

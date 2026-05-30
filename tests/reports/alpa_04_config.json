@@ -1,0 +1,68 @@
+{
+  "test_id": "04",
+  "test_name": "Config Validation",
+  "timestamp": "2026-05-30T10:45:46.445738+00:00",
+  "status": "PASS",
+  "cases_run": 11,
+  "cases_passed": 11,
+  "cases_failed": 0,
+  "cases_deferred": 0,
+  "score": 1.0,
+  "details": [
+    {
+      "case": "force_close_hour_15",
+      "status": "PASS",
+      "detail": "N/A"
+    },
+    {
+      "case": "force_close_min_45",
+      "status": "PASS",
+      "detail": "N/A"
+    },
+    {
+      "case": "stop_loss_pct_positive",
+      "status": "PASS",
+      "detail": "N/A"
+    },
+    {
+      "case": "take_profit_pct_positive",
+      "status": "PASS",
+      "detail": "N/A"
+    },
+    {
+      "case": "position_size_pct_positive",
+      "status": "PASS",
+      "detail": "N/A"
+    },
+    {
+      "case": "min_gap_pct_positive",
+      "status": "PASS",
+      "detail": "N/A"
+    },
+    {
+      "case": "max_spread_pct_positive",
+      "status": "PASS",
+      "detail": "N/A"
+    },
+    {
+      "case": "min_rel_volume_gte1",
+      "status": "PASS",
+      "detail": "N/A"
+    },
+    {
+      "case": "paper_trading_true",
+      "status": "PASS"
+    },
+    {
+      "case": "use_limit_orders_bool",
+      "status": "PASS"
+    },
+    {
+      "case": "watchlist_valid",
+      "status": "PASS",
+      "detail": "len=100"
+    }
+  ],
+  "defects_found": [],
+  "notes": ""
+}

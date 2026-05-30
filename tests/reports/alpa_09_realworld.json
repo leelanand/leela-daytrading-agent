@@ -1,0 +1,38 @@
+{
+  "test_id": "09",
+  "test_name": "Real-World Trading Gaps",
+  "timestamp": "2026-05-30T10:45:46.469767+00:00",
+  "status": "PASS",
+  "cases_run": 5,
+  "cases_passed": 2,
+  "cases_failed": 0,
+  "cases_deferred": 3,
+  "score": 0.7,
+  "details": [
+    {
+      "case": "fill_quality",
+      "status": "DEFERRED",
+      "detail": "no fills yet"
+    },
+    {
+      "case": "pdt_budget_fn",
+      "status": "PASS"
+    },
+    {
+      "case": "pdt_tracking",
+      "status": "PASS"
+    },
+    {
+      "case": "score_drift",
+      "status": "DEFERRED",
+      "detail": "no data"
+    },
+    {
+      "case": "orphan_check",
+      "status": "DEFERRED",
+      "detail": "no such column: status"
+    }
+  ],
+  "defects_found": [],
+  "notes": ""
+}

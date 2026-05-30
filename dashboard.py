@@ -37,7 +37,7 @@ SCHEDULE = [
     (1700, "Midday block — no new entries",          "MIDDAY_START", "blocked"),
     (1800, "Afternoon session resumes",              "MIDDAY_END",   "trading"),
     (2030, "Cutoff — cancel unfilled limit orders",  "CUTOFF",       "closing"),
-    (2044, "Force close all positions",              "FORCE_CLOSE",  "closing"),
+    (2045, "Force close all positions",              "FORCE_CLOSE",  "closing"),
     (2055, "Verify flat",                            "VERIFIED",     "eod"),
     (2115, "EOD report",                             "REPORT",       "eod"),
     (2130, "Performance dashboard",                  "PERFORMANCE",  "eod"),

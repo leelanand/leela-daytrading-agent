@@ -1,0 +1,503 @@
+{
+  "test_id": "ALPA_UNIT_PHASE1",
+  "test_name": "Alpaca Phase 1 unit tests -- scanner logic and gate bypasses",
+  "timestamp": "2026-05-30T10:46:45.042321+00:00",
+  "status": "PASS",
+  "cases_run": 98,
+  "cases_passed": 98,
+  "cases_failed": 0,
+  "score": 1.0,
+  "details": [
+    {
+      "case": "cat_earnings",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "cat_beat",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "cat_fda_approved",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "cat_acquisition",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "cat_merger",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "cat_guidance_raised",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "cat_upgrade",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "cat_partnership",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "cat_contract",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "cat_buyout",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "cat_case_insensitive",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "no_cat_generic",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "no_cat_empty",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "no_cat_results",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "no_cat_downgrade",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "tier_zero_unknown",
+      "status": "PASS",
+      "detail": "tier=unknown"
+    },
+    {
+      "case": "tier_5M_low",
+      "status": "PASS",
+      "detail": "tier=low"
+    },
+    {
+      "case": "tier_20M_mid",
+      "status": "PASS",
+      "detail": "tier=mid"
+    },
+    {
+      "case": "tier_100M_mid",
+      "status": "PASS",
+      "detail": "tier=mid"
+    },
+    {
+      "case": "tier_100pt1M_large",
+      "status": "PASS",
+      "detail": "tier=large"
+    },
+    {
+      "case": "tier_500M_large",
+      "status": "PASS",
+      "detail": "tier=large"
+    },
+    {
+      "case": "tier_falls_back_to_sharesOutstanding",
+      "status": "PASS",
+      "detail": "tier=mid"
+    },
+    {
+      "case": "sector_returned",
+      "status": "PASS",
+      "detail": "sector=Healthcare"
+    },
+    {
+      "case": "exception_sector_unknown",
+      "status": "PASS",
+      "detail": "sector=Unknown"
+    },
+    {
+      "case": "exception_tier_unknown",
+      "status": "PASS",
+      "detail": "tier=unknown"
+    },
+    {
+      "case": "norm_alpa_price",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_prev_close",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_today_vol",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_bid",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_ask",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_day_high",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_day_low",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_open_price",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_vwap",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_data_src",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_no_quote_bid_approx",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_no_quote_ask_approx",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_no_bar_vol_zero",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_no_bar_high_is_price",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_no_bar_low_is_price",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_no_bar_open_is_close",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "norm_alpa_exception_returns_none",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "catalyst_score_higher",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "catalyst_boost_15pct",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "catalyst_sorted_first",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "mom_bypass_all_conditions",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "mom_bypass_at_boundary",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "mom_no_bypass_low_mfo",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "mom_no_bypass_low_rvol",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "mom_no_bypass_below_vwap",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "mom_no_bypass_vwap_zero",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "mom_no_bypass_price_eq_vwap",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "fb_bypass_fires",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "fb_no_bypass_low_rvol",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "fb_no_bypass_below_vwap",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "hod_within_2pct",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "hod_outside_2pct",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "hod_no_bars",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "hod_low_mfo",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "hod_low_rvol",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "hod_fallback_to_close",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "has_catalyst_in_scanner",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "float_tier_in_scanner",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "has_news_in_scanner",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "setup_type_in_scanner",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "is_afternoon_setup_in_scanner",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "data_src_alpaca_present",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "has_catalyst_bool",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "float_tier_valid",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "move_from_open_in_range",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "catalyst_implies_news",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "no_catalyst_from_empty_news",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "scan_capped_in_alpa_agent",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "queued_tomorrow_in_alpa_agent",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "risk_stop_in_alpa_agent",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "trade_rejected_in_alpa_agent",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "scan_cap_loop_all_remaining",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "scanner_returns_25_slice",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "cap_trims_50_to_25",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "cap_keeps_fewer",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "gap_and_go",
+      "status": "PASS",
+      "detail": "got=gap_and_go"
+    },
+    {
+      "case": "vol_spike",
+      "status": "PASS",
+      "detail": "got=vol_spike"
+    },
+    {
+      "case": "news_momentum",
+      "status": "PASS",
+      "detail": "got=news_momentum"
+    },
+    {
+      "case": "trend_continuation",
+      "status": "PASS",
+      "detail": "got=trend_continuation"
+    },
+    {
+      "case": "vwap_reclaim",
+      "status": "PASS",
+      "detail": "got=vwap_reclaim"
+    },
+    {
+      "case": "hod_breakout",
+      "status": "PASS",
+      "detail": "got=hod_breakout"
+    },
+    {
+      "case": "orb_continuation",
+      "status": "PASS",
+      "detail": "got=orb_continuation"
+    },
+    {
+      "case": "all_setup_types_valid",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "force_close_hour_15",
+      "status": "PASS",
+      "detail": "got=15"
+    },
+    {
+      "case": "force_close_min_45",
+      "status": "PASS",
+      "detail": "got=45"
+    },
+    {
+      "case": "alpaca_api_key_present",
+      "status": "PASS",
+      "detail": "ALPACA_API_KEY set"
+    },
+    {
+      "case": "alpaca_secret_present",
+      "status": "PASS",
+      "detail": "ALPACA_SECRET_KEY set"
+    },
+    {
+      "case": "paper_trading_enabled",
+      "status": "PASS",
+      "detail": "PAPER_TRADING=True"
+    },
+    {
+      "case": "aft_vwap_reclaim",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "aft_hod_breakout",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "aft_below_vwap_no",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "aft_zero_price_no",
+      "status": "PASS",
+      "detail": null
+    },
+    {
+      "case": "morning_always_false",
+      "status": "PASS",
+      "detail": null
+    }
+  ],
+  "defects_found": []
+}

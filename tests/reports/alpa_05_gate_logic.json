@@ -1,0 +1,51 @@
+{
+  "test_id": "05",
+  "test_name": "Gate Logic Phase 1 Bypasses",
+  "timestamp": "2026-05-30T10:45:46.445738+00:00",
+  "status": "PASS",
+  "cases_run": 9,
+  "cases_passed": 9,
+  "cases_failed": 0,
+  "cases_deferred": 0,
+  "score": 1.0,
+  "details": [
+    {
+      "case": "momentum_gate_present",
+      "status": "PASS"
+    },
+    {
+      "case": "momentum_bypass_present",
+      "status": "PASS"
+    },
+    {
+      "case": "fb_bypass_present",
+      "status": "PASS"
+    },
+    {
+      "case": "hod_bypass_present",
+      "status": "PASS"
+    },
+    {
+      "case": "hod_2pct_threshold",
+      "status": "PASS"
+    },
+    {
+      "case": "confirmation_hod_type",
+      "status": "PASS"
+    },
+    {
+      "case": "orb_pb_confirmed_combines_all",
+      "status": "PASS"
+    },
+    {
+      "case": "scan_capped_event",
+      "status": "PASS"
+    },
+    {
+      "case": "reject_fn_present",
+      "status": "PASS"
+    }
+  ],
+  "defects_found": [],
+  "notes": ""
+}

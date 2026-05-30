@@ -1,0 +1,127 @@
+{
+  "test_id": "08",
+  "test_name": "Alpaca Agent Readiness",
+  "timestamp": "2026-05-30T10:45:46.465679+00:00",
+  "status": "PASS",
+  "cases_run": 28,
+  "cases_passed": 28,
+  "cases_failed": 0,
+  "cases_deferred": 0,
+  "score": 1.0,
+  "details": [
+    {
+      "case": "data_api_key_set",
+      "status": "PASS"
+    },
+    {
+      "case": "data_secret_key_set",
+      "status": "PASS"
+    },
+    {
+      "case": "data_finnhub_key_set",
+      "status": "PASS"
+    },
+    {
+      "case": "data_scanner_file_present",
+      "status": "PASS"
+    },
+    {
+      "case": "data_gapper_file_present",
+      "status": "PASS"
+    },
+    {
+      "case": "data_feed_log_present",
+      "status": "PASS"
+    },
+    {
+      "case": "logic_has_catalyst_logic",
+      "status": "PASS"
+    },
+    {
+      "case": "logic_float_tier_logic",
+      "status": "PASS"
+    },
+    {
+      "case": "logic_cap_25",
+      "status": "PASS"
+    },
+    {
+      "case": "logic_momentum_bypass",
+      "status": "PASS"
+    },
+    {
+      "case": "logic_hod_bypass",
+      "status": "PASS"
+    },
+    {
+      "case": "logic_fb_bypass",
+      "status": "PASS"
+    },
+    {
+      "case": "logic_scan_cap_rejection",
+      "status": "PASS"
+    },
+    {
+      "case": "risk_risk_py_exists",
+      "status": "PASS"
+    },
+    {
+      "case": "risk_can_trade_fn",
+      "status": "PASS"
+    },
+    {
+      "case": "risk_stop_loss_applied",
+      "status": "PASS"
+    },
+    {
+      "case": "risk_position_size_applied",
+      "status": "PASS"
+    },
+    {
+      "case": "risk_force_close_present",
+      "status": "PASS"
+    },
+    {
+      "case": "risk_pdt_budget_present",
+      "status": "PASS"
+    },
+    {
+      "case": "exec_executor_exists",
+      "status": "PASS"
+    },
+    {
+      "case": "exec_paper_mode_respected",
+      "status": "PASS"
+    },
+    {
+      "case": "exec_limit_orders_used",
+      "status": "PASS"
+    },
+    {
+      "case": "exec_audit_log_on_fill",
+      "status": "PASS"
+    },
+    {
+      "case": "exec_exits_file_present",
+      "status": "PASS"
+    },
+    {
+      "case": "exec_force_close_45",
+      "status": "PASS"
+    },
+    {
+      "case": "config_force_close_45",
+      "status": "PASS"
+    },
+    {
+      "case": "config_paper_trading_true",
+      "status": "PASS"
+    },
+    {
+      "case": "config_stop_loss_sane",
+      "status": "PASS"
+    }
+  ],
+  "defects_found": [],
+  "notes": "overall=1.00 mode=PAPER_ONLY DATA=1.00 LOGIC=1.00 RISK=1.00 EXECUTION=1.00 CONFIG=1.00"
+}

@@ -8,7 +8,7 @@
 #   9:48 ET = 14:48 BST  first scan
 #  12:00 ET = 17:00 BST  midday block begins (agent skips internally)
 #  13:00 ET = 18:00 BST  midday block ends
-#  15:44 ET = 20:44 BST  force close
+#  15:45 ET = 20:45 BST  force close
 #  16:00 ET = 21:00 BST  report
 #  16:15 ET = 21:15 BST  performance dashboard
 
@@ -62,6 +62,18 @@ function Test-LastScanSkipped {
 
 Write-Log "=== Trading day started ==="
 
+# ── Pre-session gate ──────────────────────────────────────────────────────────
+Write-Log "Running pre-session checks..."
+& $Python "tests\pre_session_check.py" 2>&1 | ForEach-Object {
+    Write-Host $_
+    Add-Content -Path $LogFile -Value $_
+}
+if ($LASTEXITCODE -ne 0) {
+    Write-Log "ERROR: Pre-session checks FAILED — aborting trading day. Check tests\reports\pre_session_check.json"
+    exit 1
+}
+Write-Log "Pre-session checks PASSED — proceeding with trading day"
+
 # ── Pre-market research: 14:00 BST (9:00 ET) ─────────────────────────────────
 Write-Log "Waiting for research time (14:00 BST / 9:00 ET)..."
 while ((Now-BST-HHMM) -lt 1400) {
@@ -91,8 +103,8 @@ while ($true) {
     $hhmm = Now-BST-HHMM
     $now  = Get-Date
 
-    # Force close at 20:44 BST (15:44 ET)
-    if ($hhmm -ge 2044 -and -not $forceClosed) {
+    # Force close at 20:45 BST (15:45 ET)
+    if ($hhmm -ge 2045 -and -not $forceClosed) {
         Run-Agent @("--close")
         $forceClosed = $true
         break

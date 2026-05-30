@@ -1,0 +1,616 @@
+{
+  "suite": "alpaca_integration_tests",
+  "timestamp": "2026-05-30T10:45:46.470789+00:00",
+  "total_run": 110,
+  "total_passed": 106,
+  "total_failed": 0,
+  "total_deferred": 4,
+  "overall_score": 0.9818,
+  "all_defects": [],
+  "test_results": [
+    {
+      "test_id": "01",
+      "test_name": "Alpaca API Connectivity",
+      "timestamp": "2026-05-30T10:45:46.229924+00:00",
+      "status": "PASS",
+      "cases_run": 4,
+      "cases_passed": 3,
+      "cases_failed": 0,
+      "cases_deferred": 1,
+      "score": 0.875,
+      "details": [
+        {
+          "case": "alpaca_keys_present",
+          "status": "PASS",
+          "detail": "key=set secret=set"
+        },
+        {
+          "case": "alpaca_key_is_paper_key",
+          "status": "PASS",
+          "detail": "key prefix=PKAS..."
+        },
+        {
+          "case": "alpaca_paper_dns",
+          "status": "DEFERRED",
+          "detail": "getaddrinfo() got an unexpected keyword argument 'timeout'"
+        },
+        {
+          "case": "alpaca_sdk_importable",
+          "status": "PASS",
+          "detail": "SDK imported successfully"
+        }
+      ],
+      "defects_found": [],
+      "notes": ""
+    },
+    {
+      "test_id": "02",
+      "test_name": "Alpaca Snapshot Normalization",
+      "timestamp": "2026-05-30T10:45:46.445738+00:00",
+      "status": "PASS",
+      "cases_run": 14,
+      "cases_passed": 14,
+      "cases_failed": 0,
+      "cases_deferred": 0,
+      "score": 1.0,
+      "details": [
+        {
+          "case": "price_correct",
+          "status": "PASS"
+        },
+        {
+          "case": "prev_close_correct",
+          "status": "PASS"
+        },
+        {
+          "case": "today_vol_correct",
+          "status": "PASS"
+        },
+        {
+          "case": "bid_correct",
+          "status": "PASS"
+        },
+        {
+          "case": "ask_correct",
+          "status": "PASS"
+        },
+        {
+          "case": "day_high_correct",
+          "status": "PASS"
+        },
+        {
+          "case": "day_low_correct",
+          "status": "PASS"
+        },
+        {
+          "case": "open_price_correct",
+          "status": "PASS"
+        },
+        {
+          "case": "vwap_correct",
+          "status": "PASS"
+        },
+        {
+          "case": "data_src_alpaca",
+          "status": "PASS"
+        },
+        {
+          "case": "no_quote_bid_fallback",
+          "status": "PASS",
+          "detail": "bid=49.9500 expected=49.9500"
+        },
+        {
+          "case": "no_quote_ask_fallback",
+          "status": "PASS"
+        },
+        {
+          "case": "no_bar_fallback_values",
+          "status": "PASS",
+          "detail": "vol=0 high=50.0 open=47.0"
+        },
+        {
+          "case": "exception_returns_none",
+          "status": "PASS"
+        }
+      ],
+      "defects_found": [],
+      "notes": ""
+    },
+    {
+      "test_id": "03",
+      "test_name": "Alpaca Scanner Data Path",
+      "timestamp": "2026-05-30T10:45:46.445738+00:00",
+      "status": "PASS",
+      "cases_run": 9,
+      "cases_passed": 9,
+      "cases_failed": 0,
+      "cases_deferred": 0,
+      "score": 1.0,
+      "details": [
+        {
+          "case": "snapshots_fn_exists",
+          "status": "PASS"
+        },
+        {
+          "case": "sip_feed_requested",
+          "status": "PASS"
+        },
+        {
+          "case": "iex_fallback_present",
+          "status": "PASS"
+        },
+        {
+          "case": "normalize_alpaca_exists",
+          "status": "PASS"
+        },
+        {
+          "case": "normalize_ibkr_exists",
+          "status": "PASS"
+        },
+        {
+          "case": "ibkr_primary_fallback",
+          "status": "PASS"
+        },
+        {
+          "case": "src_label_alpaca",
+          "status": "PASS"
+        },
+        {
+          "case": "src_label_ibkr",
+          "status": "PASS"
+        },
+        {
+          "case": "agent_references_alpaca",
+          "status": "PASS"
+        }
+      ],
+      "defects_found": [],
+      "notes": ""
+    },
+    {
+      "test_id": "04",
+      "test_name": "Config Validation",
+      "timestamp": "2026-05-30T10:45:46.445738+00:00",
+      "status": "PASS",
+      "cases_run": 11,
+      "cases_passed": 11,
+      "cases_failed": 0,
+      "cases_deferred": 0,
+      "score": 1.0,
+      "details": [
+        {
+          "case": "force_close_hour_15",
+          "status": "PASS",
+          "detail": "N/A"
+        },
+        {
+          "case": "force_close_min_45",
+          "status": "PASS",
+          "detail": "N/A"
+        },
+        {
+          "case": "stop_loss_pct_positive",
+          "status": "PASS",
+          "detail": "N/A"
+        },
+        {
+          "case": "take_profit_pct_positive",
+          "status": "PASS",
+          "detail": "N/A"
+        },
+        {
+          "case": "position_size_pct_positive",
+          "status": "PASS",
+          "detail": "N/A"
+        },
+        {
+          "case": "min_gap_pct_positive",
+          "status": "PASS",
+          "detail": "N/A"
+        },
+        {
+          "case": "max_spread_pct_positive",
+          "status": "PASS",
+          "detail": "N/A"
+        },
+        {
+          "case": "min_rel_volume_gte1",
+          "status": "PASS",
+          "detail": "N/A"
+        },
+        {
+          "case": "paper_trading_true",
+          "status": "PASS"
+        },
+        {
+          "case": "use_limit_orders_bool",
+          "status": "PASS"
+        },
+        {
+          "case": "watchlist_valid",
+          "status": "PASS",
+          "detail": "len=100"
+        }
+      ],
+      "defects_found": [],
+      "notes": ""
+    },
+    {
+      "test_id": "05",
+      "test_name": "Gate Logic Phase 1 Bypasses",
+      "timestamp": "2026-05-30T10:45:46.445738+00:00",
+      "status": "PASS",
+      "cases_run": 9,
+      "cases_passed": 9,
+      "cases_failed": 0,
+      "cases_deferred": 0,
+      "score": 1.0,
+      "details": [
+        {
+          "case": "momentum_gate_present",
+          "status": "PASS"
+        },
+        {
+          "case": "momentum_bypass_present",
+          "status": "PASS"
+        },
+        {
+          "case": "fb_bypass_present",
+          "status": "PASS"
+        },
+        {
+          "case": "hod_bypass_present",
+          "status": "PASS"
+        },
+        {
+          "case": "hod_2pct_threshold",
+          "status": "PASS"
+        },
+        {
+          "case": "confirmation_hod_type",
+          "status": "PASS"
+        },
+        {
+          "case": "orb_pb_confirmed_combines_all",
+          "status": "PASS"
+        },
+        {
+          "case": "scan_capped_event",
+          "status": "PASS"
+        },
+        {
+          "case": "reject_fn_present",
+          "status": "PASS"
+        }
+      ],
+      "defects_found": [],
+      "notes": ""
+    },
+    {
+      "test_id": "06",
+      "test_name": "Cross-Agent Code Parity",
+      "timestamp": "2026-05-30T10:45:46.445738+00:00",
+      "status": "PASS",
+      "cases_run": 19,
+      "cases_passed": 19,
+      "cases_failed": 0,
+      "cases_deferred": 0,
+      "score": 1.0,
+      "details": [
+        {
+          "case": "both_have_has_catalyst",
+          "status": "PASS"
+        },
+        {
+          "case": "both_have_float_tier",
+          "status": "PASS"
+        },
+        {
+          "case": "both_cap_at_25",
+          "status": "PASS"
+        },
+        {
+          "case": "both_have_catalyst_boost",
+          "status": "PASS"
+        },
+        {
+          "case": "both_have_catalyst_kws",
+          "status": "PASS"
+        },
+        {
+          "case": "both_have_symbol_info",
+          "status": "PASS"
+        },
+        {
+          "case": "both_momentum_bypass",
+          "status": "PASS"
+        },
+        {
+          "case": "both_fb_bypass",
+          "status": "PASS"
+        },
+        {
+          "case": "both_hod_bypass",
+          "status": "PASS"
+        },
+        {
+          "case": "both_scan_capped",
+          "status": "PASS"
+        },
+        {
+          "case": "both_hod_consolidation",
+          "status": "PASS"
+        },
+        {
+          "case": "both_orb_pb_confirmed",
+          "status": "PASS"
+        },
+        {
+          "case": "force_close_min_same",
+          "status": "PASS"
+        },
+        {
+          "case": "force_close_hour_same",
+          "status": "PASS"
+        },
+        {
+          "case": "stop_loss_pct_same",
+          "status": "PASS"
+        },
+        {
+          "case": "take_profit_pct_same",
+          "status": "PASS"
+        },
+        {
+          "case": "min_gap_pct_same",
+          "status": "PASS"
+        },
+        {
+          "case": "max_spread_pct_same",
+          "status": "PASS"
+        },
+        {
+          "case": "min_rel_volume_same",
+          "status": "PASS"
+        }
+      ],
+      "defects_found": [],
+      "notes": ""
+    },
+    {
+      "test_id": "07",
+      "test_name": "Holiday Regression",
+      "timestamp": "2026-05-30T10:45:46.445738+00:00",
+      "status": "PASS",
+      "cases_run": 11,
+      "cases_passed": 11,
+      "cases_failed": 0,
+      "cases_deferred": 0,
+      "score": 1.0,
+      "details": [
+        {
+          "case": "holiday_new_years",
+          "status": "PASS",
+          "detail": "2026-01-01"
+        },
+        {
+          "case": "holiday_mlk",
+          "status": "PASS",
+          "detail": "2026-01-19"
+        },
+        {
+          "case": "holiday_presidents",
+          "status": "PASS",
+          "detail": "2026-02-16"
+        },
+        {
+          "case": "holiday_good_friday",
+          "status": "PASS",
+          "detail": "2026-04-03"
+        },
+        {
+          "case": "holiday_memorial",
+          "status": "PASS",
+          "detail": "2026-05-25"
+        },
+        {
+          "case": "holiday_thanksgiving",
+          "status": "PASS",
+          "detail": "2026-11-26"
+        },
+        {
+          "case": "holiday_christmas",
+          "status": "PASS",
+          "detail": "2026-12-25"
+        },
+        {
+          "case": "trading_jan2",
+          "status": "PASS",
+          "detail": "2026-01-02"
+        },
+        {
+          "case": "trading_may29",
+          "status": "PASS",
+          "detail": "2026-05-29"
+        },
+        {
+          "case": "trading_black_friday",
+          "status": "PASS",
+          "detail": "2026-11-27"
+        },
+        {
+          "case": "alpaca_clock_api_used",
+          "status": "PASS",
+          "detail": "Alpaca clock.is_open handles holidays server-side"
+        }
+      ],
+      "defects_found": [],
+      "notes": ""
+    },
+    {
+      "test_id": "08",
+      "test_name": "Alpaca Agent Readiness",
+      "timestamp": "2026-05-30T10:45:46.465679+00:00",
+      "status": "PASS",
+      "cases_run": 28,
+      "cases_passed": 28,
+      "cases_failed": 0,
+      "cases_deferred": 0,
+      "score": 1.0,
+      "details": [
+        {
+          "case": "data_api_key_set",
+          "status": "PASS"
+        },
+        {
+          "case": "data_secret_key_set",
+          "status": "PASS"
+        },
+        {
+          "case": "data_finnhub_key_set",
+          "status": "PASS"
+        },
+        {
+          "case": "data_scanner_file_present",
+          "status": "PASS"
+        },
+        {
+          "case": "data_gapper_file_present",
+          "status": "PASS"
+        },
+        {
+          "case": "data_feed_log_present",
+          "status": "PASS"
+        },
+        {
+          "case": "logic_has_catalyst_logic",
+          "status": "PASS"
+        },
+        {
+          "case": "logic_float_tier_logic",
+          "status": "PASS"
+        },
+        {
+          "case": "logic_cap_25",
+          "status": "PASS"
+        },
+        {
+          "case": "logic_momentum_bypass",
+          "status": "PASS"
+        },
+        {
+          "case": "logic_hod_bypass",
+          "status": "PASS"
+        },
+        {
+          "case": "logic_fb_bypass",
+          "status": "PASS"
+        },
+        {
+          "case": "logic_scan_cap_rejection",
+          "status": "PASS"
+        },
+        {
+          "case": "risk_risk_py_exists",
+          "status": "PASS"
+        },
+        {
+          "case": "risk_can_trade_fn",
+          "status": "PASS"
+        },
+        {
+          "case": "risk_stop_loss_applied",
+          "status": "PASS"
+        },
+        {
+          "case": "risk_position_size_applied",
+          "status": "PASS"
+        },
+        {
+          "case": "risk_force_close_present",
+          "status": "PASS"
+        },
+        {
+          "case": "risk_pdt_budget_present",
+          "status": "PASS"
+        },
+        {
+          "case": "exec_executor_exists",
+          "status": "PASS"
+        },
+        {
+          "case": "exec_paper_mode_respected",
+          "status": "PASS"
+        },
+        {
+          "case": "exec_limit_orders_used",
+          "status": "PASS"
+        },
+        {
+          "case": "exec_audit_log_on_fill",
+          "status": "PASS"
+        },
+        {
+          "case": "exec_exits_file_present",
+          "status": "PASS"
+        },
+        {
+          "case": "exec_force_close_45",
+          "status": "PASS"
+        },
+        {
+          "case": "config_force_close_45",
+          "status": "PASS"
+        },
+        {
+          "case": "config_paper_trading_true",
+          "status": "PASS"
+        },
+        {
+          "case": "config_stop_loss_sane",
+          "status": "PASS"
+        }
+      ],
+      "defects_found": [],
+      "notes": "overall=1.00 mode=PAPER_ONLY DATA=1.00 LOGIC=1.00 RISK=1.00 EXECUTION=1.00 CONFIG=1.00"
+    },
+    {
+      "test_id": "09",
+      "test_name": "Real-World Trading Gaps",
+      "timestamp": "2026-05-30T10:45:46.469767+00:00",
+      "status": "PASS",
+      "cases_run": 5,
+      "cases_passed": 2,
+      "cases_failed": 0,
+      "cases_deferred": 3,
+      "score": 0.7,
+      "details": [
+        {
+          "case": "fill_quality",
+          "status": "DEFERRED",
+          "detail": "no fills yet"
+        },
+        {
+          "case": "pdt_budget_fn",
+          "status": "PASS"
+        },
+        {
+          "case": "pdt_tracking",
+          "status": "PASS"
+        },
+        {
+          "case": "score_drift",
+          "status": "DEFERRED",
+          "detail": "no data"
+        },
+        {
+          "case": "orphan_check",
+          "status": "DEFERRED",
+          "detail": "no such column: status"
+        }
+      ],
+      "defects_found": [],
+      "notes": ""
+    }
+  ]
+}

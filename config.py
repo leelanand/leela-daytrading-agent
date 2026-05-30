@@ -28,7 +28,7 @@ POSITION_SIZE_PCT = 0.20
 STOP_LOSS_PCT     = 0.015
 TAKE_PROFIT_PCT   = 0.025
 FORCE_CLOSE_HOUR  = 15
-FORCE_CLOSE_MIN   = 44   # 15:44 ET / 20:44 BST — task fires at 20:44 BST
+FORCE_CLOSE_MIN   = 45   # 15:45 ET / 20:45 BST — task fires at 20:45 BST
 
 USE_LIMIT_ORDERS  = True       # limit orders preferred over market
 LIMIT_OFFSET_PCT  = 0.001      # buy limit = price * (1 + LIMIT_OFFSET_PCT)
