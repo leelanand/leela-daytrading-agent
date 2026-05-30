@@ -171,6 +171,7 @@ results["summary"] = {
     "flake8_pass":  flake8_ok,
     "radon_pass":   radon_ok,
     "overall_pass": overall_ok,
+    "overall":      "PASS" if overall_ok else "WARN",
     "pylint_score": results["pylint"].get("score", 0),
 }
 
