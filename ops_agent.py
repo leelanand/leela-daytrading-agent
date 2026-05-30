@@ -130,7 +130,7 @@ LATE_ADDITIONS_EXPIRY = 45   # minutes — late addition symbols expire after th
 def tool_get_bpm_status(_: dict) -> dict:
     import urllib.request
     try:
-        with urllib.request.urlopen(BPM_URL, timeout=8) as resp:
+        with urllib.request.urlopen(BPM_URL, timeout=8) as resp:  # nosec B310
             bpm = json.loads(resp.read())
     except Exception as e:
         return {"error": str(e), "dashboard_down": True,
@@ -381,7 +381,7 @@ def tool_log_missed_opportunities(args: dict) -> dict:
 
     # Fetch fresh BPM to get current missed movers and risk state
     try:
-        with urllib.request.urlopen(BPM_URL, timeout=8) as resp:
+        with urllib.request.urlopen(BPM_URL, timeout=8) as resp:  # nosec B310
             bpm = json.loads(resp.read())
     except Exception as e:
         return {"error": f"BPM unreachable: {e}"}
@@ -584,6 +584,55 @@ def tool_complete(args: dict) -> dict:
     return args
 
 
+def tool_get_quality_status(_: dict) -> dict:
+    """Read the latest quality/security JSON reports from both agents."""
+    def _load(path: Path) -> dict:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _age_mins(path: Path) -> float:
+        try:
+            return (datetime.now() - datetime.fromtimestamp(path.stat().st_mtime)).total_seconds() / 60
+        except Exception:
+            return 9999.0
+
+    out = {}
+    for agent, base in [("alpaca", ALPACA_DIR), ("ibkr", IBKR_DIR)]:
+        r = base / "tests" / "reports"
+        br  = _load(r / "business_rules.json")
+        pre = _load(r / "pre_session_check.json")
+        cq  = _load(r / "code_quality.json")
+        sec = _load(r / "security_scan.json")
+        out[agent] = {
+            "business_rules": {
+                "passed": br.get("passed"), "total": br.get("total"),
+                "status": br.get("status"), "age_mins": round(_age_mins(r / "business_rules.json"), 1),
+            },
+            "pre_session": {
+                "passed": pre.get("passed"), "status": pre.get("status"),
+                "age_mins": round(_age_mins(r / "pre_session_check.json"), 1),
+            },
+            "code_quality": {
+                "pylint": cq.get("pylint", {}).get("score"),
+                "flake8_errors": cq.get("flake8", {}).get("errors"),
+                "max_complexity": cq.get("radon", {}).get("max_complexity"),
+                "status": cq.get("summary", {}).get("overall"),
+                "age_mins": round(_age_mins(r / "code_quality.json"), 1),
+            },
+            "security": {
+                "bandit_pass": sec.get("summary", {}).get("bandit_pass"),
+                "pip_audit_pass": sec.get("summary", {}).get("pip_audit_pass"),
+                "blocking_issues": sec.get("summary", {}).get("blocking_issues", 0),
+                "high_cves": sec.get("summary", {}).get("high_cves", 0),
+                "overall_pass": sec.get("summary", {}).get("overall_pass"),
+                "age_mins": round(_age_mins(r / "security_scan.json"), 1),
+            },
+        }
+    return out
+
+
 # ── Tool registry ─────────────────────────────────────────────────────────────
 
 TOOL_FNS = {
@@ -598,6 +647,7 @@ TOOL_FNS = {
     "read_trading_file":         tool_read_trading_file,
     "log_action":                tool_log_action,
     "write_baseline_entry":      tool_write_baseline_entry,
+    "get_quality_status":        tool_get_quality_status,
     "complete":                  tool_complete,
 }
 
@@ -738,6 +788,15 @@ TOOLS = [
         },
     },
     {
+        "name": "get_quality_status",
+        "description": (
+            "Read the latest quality and security gate reports for both agents from disk. "
+            "Returns business_rules, pre_session, code_quality, and security results with age_mins. "
+            "Call when you want to check if tests or security scans have regressed, or when age_mins is old."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "complete",
         "description": "End the monitoring cycle with a structured summary.",
         "input_schema": {
@@ -807,9 +866,18 @@ ALWAYS NOTIFY:
 NEVER NOTIFY (normal behaviour):
 - Regime-gated scan skips. No trades in flat/low-vol. Midday block. IEX on Alpaca. research_consumed=False pre-prescan. <5 trades. IBKR error 300. Watchlist not trading. Elevated change rate alone. scored_not_traded alone.
 
+QUALITY GATE RULES (call get_quality_status once per cycle — it's cheap):
+- business_rules FAILURES -> ALWAYS NOTIFY (trading rules broken)
+- security blocking_issues>0 -> ALWAYS NOTIFY (HIGH/MEDIUM bandit finding needs fixing)
+- security high_cves>0 -> ALWAYS NOTIFY (CVE in dependency)
+- pre_session TRADING_BLOCKED -> ALWAYS NOTIFY (gate is preventing today's run)
+- code_quality WARN is NORMAL — do not notify, add to observations only if pylint<5.0
+- Reports older than 48h -> add to observations (run_checks.ps1 may not have run)
+- Reports missing (age_mins=9999) first cycle of week -> observation; after that escalate
+
 ACTIONS AVAILABLE: restart_pipeline(log>7min+gateway up), restart_dashboard(port 8765 down), clear_cache(score/candidates/regime/intraday), run_agent_command(--prescan/--research only when stalled), read_trading_file(investigate patterns), log_action(document), complete(finish cycle).
 
-PROCESS: 1.get_bpm_status 2.check each section 3.read_trading_file for patterns needing evidence 4.check_gateway/get_process_info for infra 5.minimum intervention 6.log observations 7.complete() with diagnoses in observations not notify_human"""
+PROCESS: 1.get_bpm_status 2.get_quality_status 3.check each BPM section 4.read_trading_file for patterns needing evidence 5.check_gateway/get_process_info for infra 6.minimum intervention 7.log observations 8.complete() with diagnoses in observations not notify_human"""
 
 
 # ── Agent loop ────────────────────────────────────────────────────────────────

@@ -1,0 +1,27 @@
+{
+  "agent": "alpaca",
+  "timestamp": "2026-05-30T12:11:11.179480",
+  "bandit": {
+    "total_issues": 103,
+    "by_severity": {
+      "LOW": 103
+    },
+    "blocking_count": 0,
+    "pass": true,
+    "blocking_issues": [],
+    "low_severity_count": 103
+  },
+  "pip_audit": {
+    "total_vulnerabilities": 0,
+    "high_severity_count": 0,
+    "pass": true,
+    "vulnerabilities": []
+  },
+  "summary": {
+    "bandit_pass": true,
+    "pip_audit_pass": true,
+    "overall_pass": true,
+    "blocking_issues": 0,
+    "high_cves": 0
+  }
+}

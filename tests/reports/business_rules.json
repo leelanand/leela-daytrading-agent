@@ -1,0 +1,355 @@
+{
+  "agent": "alpaca",
+  "timestamp": "2026-05-30T12:02:21.258984",
+  "passed": 69,
+  "failed": 0,
+  "total": 69,
+  "status": "ALL_PASS",
+  "details": [
+    {
+      "case": "stop_loss_between_0.5_and_4pct",
+      "status": "PASS",
+      "detail": "got=0.015"
+    },
+    {
+      "case": "take_profit_gt_stop_loss",
+      "status": "PASS",
+      "detail": "tp=0.025 sl=0.015"
+    },
+    {
+      "case": "take_profit_below_10pct",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "position_size_1_to_30pct",
+      "status": "PASS",
+      "detail": "got=0.08"
+    },
+    {
+      "case": "min_gap_at_least_1pct",
+      "status": "PASS",
+      "detail": "got=1.5"
+    },
+    {
+      "case": "min_rvol_at_least_1x",
+      "status": "PASS",
+      "detail": "got=1.3"
+    },
+    {
+      "case": "max_spread_below_1pct",
+      "status": "PASS",
+      "detail": "got=0.3"
+    },
+    {
+      "case": "force_close_hour_15",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "force_close_min_45",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "daily_loss_limit_1_to_10pct",
+      "status": "PASS",
+      "detail": "got=0.03"
+    },
+    {
+      "case": "max_positions_1_to_10",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "max_trades_per_day_sane",
+      "status": "PASS",
+      "detail": "got=20 (paper mode may allow more for testing)"
+    },
+    {
+      "case": "min_score_to_trade_gte_60",
+      "status": "PASS",
+      "detail": "got=72"
+    },
+    {
+      "case": "paper_trading_true",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "alpaca_key_present",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "alpaca_key_is_paper",
+      "status": "PASS",
+      "detail": "paper key must start with PK"
+    },
+    {
+      "case": "risk_reward_ratio_gte_1",
+      "status": "PASS",
+      "detail": "R:R=1.67"
+    },
+    {
+      "case": "gap_filter_in_scanner",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "rvol_filter_in_scanner",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "spread_filter_in_risk",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "score_gate_in_agent",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "volume_filter_in_risk",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "momentum_bypass_in_agent",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "hod_bypass_in_agent",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "fb_bypass_in_agent",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "normalize_alpaca_present",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "alpaca_clock_used",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "stop_loss_in_executor",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "take_profit_in_executor",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "force_close_in_agent",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "tight_stop_in_risk",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "exits_module_present",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "log_audit_on_fill",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "position_size_correct",
+      "status": "PASS",
+      "detail": "expected=16 got=16"
+    },
+    {
+      "case": "position_size_min_1",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "position_size_min_1_high_price",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "position_size_scales_with_portfolio",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "spread_wide_blocked",
+      "status": "PASS",
+      "detail": "spread=0.5 > 0.3"
+    },
+    {
+      "case": "spread_ok_passes",
+      "status": "PASS",
+      "detail": "spread=0.1 <= 0.3"
+    },
+    {
+      "case": "stop_pct_gt_zero",
+      "status": "PASS",
+      "detail": "got=0.015"
+    },
+    {
+      "case": "max_trades_pdt_sane",
+      "status": "PASS",
+      "detail": "MAX_TRADES_PER_DAY=20 (paper mode may allow more)"
+    },
+    {
+      "case": "pdt_budget_fn_in_agent",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "alpaca_pdt_server_side",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "choppy_min_score_sane",
+      "status": "PASS",
+      "detail": "choppy=68 (may be below normal in paper/exploratory mode)"
+    },
+    {
+      "case": "low_vol_min_score_higher",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "low_vol_max_trades_lte_1",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "tight_stop_regimes_list",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "no_trade_regime_blocked",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "midday_block_enforced",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "force_close_is_15_45",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "force_close_before_16_00",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "force_close_after_15_30",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "parity_force_close_min",
+      "status": "PASS",
+      "detail": "alpaca=45 ibkr=45"
+    },
+    {
+      "case": "parity_force_close_hour",
+      "status": "PASS",
+      "detail": "alpaca=15 ibkr=15"
+    },
+    {
+      "case": "parity_stop_loss_pct",
+      "status": "PASS",
+      "detail": "alpaca=0.015 ibkr=0.015"
+    },
+    {
+      "case": "parity_take_profit_pct",
+      "status": "PASS",
+      "detail": "alpaca=0.025 ibkr=0.025"
+    },
+    {
+      "case": "parity_min_gap_pct",
+      "status": "PASS",
+      "detail": "alpaca=1.5 ibkr=1.5"
+    },
+    {
+      "case": "parity_max_spread_pct",
+      "status": "PASS",
+      "detail": "alpaca=0.3 ibkr=0.3"
+    },
+    {
+      "case": "parity_min_rel_volume",
+      "status": "PASS",
+      "detail": "alpaca=1.3 ibkr=1.3"
+    },
+    {
+      "case": "parity_daily_loss_limit",
+      "status": "PASS",
+      "detail": "alpaca=0.03 ibkr=0.03"
+    },
+    {
+      "case": "kill_switch_defined",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "kill_switch_off",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "paper_trading_in_executor",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "case": "field_symbol_in_code",
+      "status": "PASS",
+      "detail": "'symbol' in scanner.py"
+    },
+    {
+      "case": "field_price_in_code",
+      "status": "PASS",
+      "detail": "'price' in scanner.py"
+    },
+    {
+      "case": "field_gap_pct_in_code",
+      "status": "PASS",
+      "detail": "'gap_pct' in scanner.py"
+    },
+    {
+      "case": "field_rel_volume_in_code",
+      "status": "PASS",
+      "detail": "'rel_volume' in scanner.py"
+    },
+    {
+      "case": "field_spread_pct_in_code",
+      "status": "PASS",
+      "detail": "'spread_pct' in scanner.py"
+    },
+    {
+      "case": "field_score_in_code",
+      "status": "PASS",
+      "detail": "'score' in agent.py"
+    }
+  ]
+}

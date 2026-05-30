@@ -249,7 +249,7 @@ def _candidate_hash(c: dict, top_news: list, research: dict, regime: str) -> str
         "regime":       regime if CLAUDE_CACHE_REGIME_CHANGE_INVALIDATE else "",
         "setup":        c.get("setup_type", ""),
     }
-    return hashlib.md5(json.dumps(key, sort_keys=True).encode()).hexdigest()[:12]
+    return hashlib.md5(json.dumps(key, sort_keys=True).encode(), usedforsecurity=False).hexdigest()[:12]
 
 
 def _build_snap(c: dict, top_news: list, regime: str) -> dict:

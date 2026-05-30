@@ -1,0 +1,172 @@
+{
+  "agent": "alpaca",
+  "timestamp": "2026-05-30T12:09:26.913455",
+  "files_scanned": 35,
+  "pylint": {
+    "score": 0.0,
+    "pass": false,
+    "threshold": 7.0,
+    "issue_count": 776,
+    "by_type": {
+      "convention": 277,
+      "warning": 321,
+      "refactor": 172,
+      "error": 6
+    },
+    "top_issues": [
+      {
+        "file": "agent.py",
+        "line": 446,
+        "msg": "Line too long (128/120)",
+        "id": "C0301"
+      },
+      {
+        "file": "agent.py",
+        "line": 450,
+        "msg": "Line too long (128/120)",
+        "id": "C0301"
+      },
+      {
+        "file": "agent.py",
+        "line": 561,
+        "msg": "Line too long (121/120)",
+        "id": "C0301"
+      },
+      {
+        "file": "agent.py",
+        "line": 1099,
+        "msg": "Unnecessary parens after '=' keyword",
+        "id": "C0325"
+      },
+      {
+        "file": "agent.py",
+        "line": 1100,
+        "msg": "Unnecessary parens after '=' keyword",
+        "id": "C0325"
+      },
+      {
+        "file": "agent.py",
+        "line": 1135,
+        "msg": "Line too long (131/120)",
+        "id": "C0301"
+      },
+      {
+        "file": "agent.py",
+        "line": 1267,
+        "msg": "Unnecessary parens after '=' keyword",
+        "id": "C0325"
+      },
+      {
+        "file": "agent.py",
+        "line": 1268,
+        "msg": "Unnecessary parens after '=' keyword",
+        "id": "C0325"
+      },
+      {
+        "file": "agent.py",
+        "line": 1279,
+        "msg": "Line too long (123/120)",
+        "id": "C0301"
+      },
+      {
+        "file": "agent.py",
+        "line": 1539,
+        "msg": "Line too long (133/120)",
+        "id": "C0301"
+      }
+    ]
+  },
+  "flake8": {
+    "total_issues": 1397,
+    "errors": 1329,
+    "warnings": 0,
+    "pass": false,
+    "top_issues": [
+      "C:\\Users\\leela\\leela-daytrading-agent\\agent.py:48:1: F401 'config.CHOPPY_MIN_SCORE' imported but unused",
+      "C:\\Users\\leela\\leela-daytrading-agent\\agent.py:48:1: F401 'config.LOW_VOLUME_MIN_SCORE' imported but unused",
+      "C:\\Users\\leela\\leela-daytrading-agent\\agent.py:48:1: F401 'config.TIER_HIGH_MIN' imported but unused",
+      "C:\\Users\\leela\\leela-daytrading-agent\\agent.py:48:1: F401 'config.TIER_ELITE_MIN' imported but unused",
+      "C:\\Users\\leela\\leela-daytrading-agent\\agent.py:48:1: F401 'config.DAILY_LOSS_LIMIT' imported but unused",
+      "C:\\Users\\leela\\leela-daytrading-agent\\agent.py:48:1: F401 'config.MAX_POSITIONS' imported but unused",
+      "C:\\Users\\leela\\leela-daytrading-agent\\agent.py:48:1: F401 'config.DECAY_BAND_1_POINTS' imported but unused",
+      "C:\\Users\\leela\\leela-daytrading-agent\\agent.py:48:1: F401 'config.DECAY_BAND_3_MINS' imported but unused",
+      "C:\\Users\\leela\\leela-daytrading-agent\\agent.py:48:1: F401 'config.EXTREME_HIGH_VOL_SPREAD_MULT' imported but unused",
+      "C:\\Users\\leela\\leela-daytrading-agent\\agent.py:48:1: F401 'config.AUDIT_LOG_FILE' imported but unused"
+    ]
+  },
+  "radon": {
+    "max_complexity": 246,
+    "threshold": 15,
+    "pass": false,
+    "high_complexity_count": 62,
+    "high_complexity_fns": [
+      {
+        "file": "agent.py",
+        "name": "_scan_and_trade",
+        "complexity": 246,
+        "rank": "F"
+      },
+      {
+        "file": "agent.py",
+        "name": "_precheck",
+        "complexity": 32,
+        "rank": "E"
+      },
+      {
+        "file": "agent.py",
+        "name": "_pre_submit_check",
+        "complexity": 21,
+        "rank": "D"
+      },
+      {
+        "file": "agent.py",
+        "name": "_prescan",
+        "complexity": 20,
+        "rank": "C"
+      },
+      {
+        "file": "agent.py",
+        "name": "_paper_category_report",
+        "complexity": 18,
+        "rank": "C"
+      },
+      {
+        "file": "agent.py",
+        "name": "_verify_bracket",
+        "complexity": 17,
+        "rank": "C"
+      },
+      {
+        "file": "agent.py",
+        "name": "_validate_vwap_reclaim",
+        "complexity": 16,
+        "rank": "C"
+      },
+      {
+        "file": "analyst.py",
+        "name": "analyse_candidates",
+        "complexity": 68,
+        "rank": "F"
+      },
+      {
+        "file": "analyst.py",
+        "name": "_local_score",
+        "complexity": 39,
+        "rank": "E"
+      },
+      {
+        "file": "analyst.py",
+        "name": "_should_invalidate",
+        "complexity": 16,
+        "rank": "C"
+      }
+    ]
+  },
+  "summary": {
+    "pylint_pass": false,
+    "flake8_pass": false,
+    "radon_pass": false,
+    "overall_pass": false,
+    "pylint_score": 0.0
+  }
+}

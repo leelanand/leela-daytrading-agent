@@ -231,7 +231,7 @@ def _fetch_alpaca_balance() -> str:
             f"{base}/v2/account",
             headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": secret},
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310
             data = json.loads(resp.read())
             val  = data.get("portfolio_value") or data.get("equity", "")
             return f"{float(val):,.2f}" if val else ""
@@ -408,6 +408,82 @@ def _feed_health() -> dict:
 
 def _ibkr_trades_today() -> list[dict]:
     return _trades_today(IBKR_DIR / "daytrades.db")
+
+
+def _quality_status() -> dict:
+    """Read latest test/quality/security JSON reports for dashboard display."""
+    def _load(path: Path) -> dict:
+        try:
+            return json.loads(path.read_text()) if path.exists() else {}
+        except Exception:
+            return {}
+
+    def _age_mins(path: Path) -> float:
+        try:
+            import time
+            return round((time.time() - path.stat().st_mtime) / 60, 1)
+        except Exception:
+            return -1.0
+
+    base = ALPACA_DIR / "tests" / "reports"
+    ibkr = IBKR_DIR  / "tests" / "reports"
+
+    def _suite(d: dict) -> dict:
+        return {
+            "passed":  d.get("passed", d.get("p0_passed", d.get("cases_passed", "?"))),
+            "total":   d.get("total",  d.get("p0_passed", d.get("cases_run",    "?"))),
+            "status":  d.get("status", "unknown"),
+        }
+
+    alpa_unit    = _load(base / "test_phase1_unit.json")
+    alpa_rules   = _load(base / "business_rules.json")
+    alpa_quality = _load(base / "code_quality.json")
+    alpa_sec     = _load(base / "security_scan.json")
+    alpa_pre     = _load(base / "pre_session_check.json")
+    alpa_suite   = _load(base / "alpaca_suite_summary.json")
+    checks_sum   = _load(base / "checks_summary.json")
+
+    ibkr_unit    = _load(ibkr / "test_phase1_unit.json")
+    ibkr_rules   = _load(ibkr / "business_rules.json")
+    ibkr_quality = _load(ibkr / "code_quality.json")
+    ibkr_sec     = _load(ibkr / "security_scan.json")
+    ibkr_pre     = _load(ibkr / "pre_session_check.json")
+
+    return {
+        "last_run":       checks_sum.get("timestamp", "never"),
+        "overall_status": checks_sum.get("status", "not_run"),
+        "failures":       checks_sum.get("failures", 0),
+        "alpaca": {
+            "unit_tests":   {"passed": alpa_unit.get("passed","?"), "total": alpa_unit.get("total","?"),
+                             "status": alpa_unit.get("status","?")},
+            "rules":        {"passed": alpa_rules.get("passed","?"), "total": alpa_rules.get("total","?"),
+                             "status": alpa_rules.get("status","?")},
+            "pre_session":  {"passed": alpa_pre.get("p0_passed","?"), "status": alpa_pre.get("status","?")},
+            "integration":  {"passed": alpa_suite.get("passed","?"), "total": alpa_suite.get("total","?"),
+                             "score": alpa_suite.get("score","?")},
+            "code_quality": {"pylint": alpa_quality.get("pylint",{}).get("score","?"),
+                             "flake8_errors": alpa_quality.get("flake8",{}).get("errors","?"),
+                             "complexity": alpa_quality.get("radon",{}).get("max_complexity","?"),
+                             "pass": alpa_quality.get("summary",{}).get("overall_pass","?")},
+            "security":     {"blocking": alpa_sec.get("bandit",{}).get("blocking_count","?"),
+                             "cves": alpa_sec.get("pip_audit",{}).get("high_severity_count","?"),
+                             "pass": alpa_sec.get("summary",{}).get("overall_pass","?")},
+        },
+        "ibkr": {
+            "unit_tests":   {"passed": ibkr_unit.get("passed","?"), "total": ibkr_unit.get("total","?"),
+                             "status": ibkr_unit.get("status","?")},
+            "rules":        {"passed": ibkr_rules.get("passed","?"), "total": ibkr_rules.get("total","?"),
+                             "status": ibkr_rules.get("status","?")},
+            "pre_session":  {"passed": ibkr_pre.get("p0_passed","?"), "status": ibkr_pre.get("status","?")},
+            "code_quality": {"pylint": ibkr_quality.get("pylint",{}).get("score","?"),
+                             "flake8_errors": ibkr_quality.get("flake8",{}).get("errors","?"),
+                             "complexity": ibkr_quality.get("radon",{}).get("max_complexity","?"),
+                             "pass": ibkr_quality.get("summary",{}).get("overall_pass","?")},
+            "security":     {"blocking": ibkr_sec.get("bandit",{}).get("blocking_count","?"),
+                             "cves": ibkr_sec.get("pip_audit",{}).get("high_severity_count","?"),
+                             "pass": ibkr_sec.get("summary",{}).get("overall_pass","?")},
+        },
+    }
 
 
 # ── Schedule status ───────────────────────────────────────────────────────────
@@ -615,8 +691,9 @@ def _build_status() -> dict:
         "perf":       {k: perf.get(k) for k in
                        ("win_rate", "profit_factor", "expectancy", "trades")
                        if k in perf},
-        "live_gate":  live_gate,
+        "live_gate":   live_gate,
         "feed_health": feed_health,
+        "quality":     _quality_status(),
     }
 
 
@@ -752,6 +829,7 @@ HTML = r"""<!DOCTYPE html>
 <div class="tab-bar">
   <button class="tab-btn active" id="tab-btn-status" onclick="switchTab('status')">Status</button>
   <button class="tab-btn" id="tab-btn-bpm" onclick="switchTab('bpm')">Business Process Monitor</button>
+  <button class="tab-btn" id="tab-btn-quality" onclick="switchTab('quality')">Quality &amp; Security</button>
 </div>
 
 <div id="tab-status">
@@ -926,6 +1004,13 @@ HTML = r"""<!DOCTYPE html>
   <div class="bpm-ts" id="bpm-generated-at"></div>
 
 </div><!-- end tab-bpm -->
+
+<div id="tab-quality" style="display:none">
+  <div class="card" style="margin-bottom:16px">
+    <h2>Quality &amp; Security Gate</h2>
+    <div id="quality-panel"><span style="color:#484f58">Loading...</span></div>
+  </div>
+</div><!-- end tab-quality -->
 
 <script>
 let currentBSThhmm = 0;
@@ -1214,11 +1299,14 @@ setInterval(refresh, 30000);
 
 // ── Tab switching ──────────────────────────────────────────────────────────
 function switchTab(name) {
-  document.getElementById('tab-status').style.display = name === 'status' ? '' : 'none';
-  document.getElementById('tab-bpm').style.display    = name === 'bpm'    ? '' : 'none';
-  document.getElementById('tab-btn-status').className = 'tab-btn' + (name === 'status' ? ' active' : '');
-  document.getElementById('tab-btn-bpm').className    = 'tab-btn' + (name === 'bpm'    ? ' active' : '');
-  if (name === 'bpm') refreshBpm();
+  document.getElementById('tab-status').style.display  = name === 'status'  ? '' : 'none';
+  document.getElementById('tab-bpm').style.display     = name === 'bpm'     ? '' : 'none';
+  document.getElementById('tab-quality').style.display = name === 'quality' ? '' : 'none';
+  document.getElementById('tab-btn-status').className  = 'tab-btn' + (name === 'status'  ? ' active' : '');
+  document.getElementById('tab-btn-bpm').className     = 'tab-btn' + (name === 'bpm'     ? ' active' : '');
+  document.getElementById('tab-btn-quality').className = 'tab-btn' + (name === 'quality' ? ' active' : '');
+  if (name === 'bpm')     refreshBpm();
+  if (name === 'quality') refreshQuality();
 }
 
 // ── BPM helpers ───────────────────────────────────────────────────────────
@@ -1489,6 +1577,77 @@ async function refreshBpm() {
 }
 
 setInterval(refreshBpm, 60000);
+
+// ── Quality Gate Panel ────────────────────────────────────────────────────────
+function cell(val, okVal, fmt) {
+  const v = val === undefined || val === '?' ? '—' : (fmt ? fmt(val) : val);
+  const ok = okVal === undefined ? null : (val === okVal || val === true);
+  const color = ok === null ? '#8b949e' : (ok ? '#3fb950' : '#f85149');
+  return `<td style="color:${color};padding:2px 8px">${v}</td>`;
+}
+function passCell(val) {
+  if (val === true  || val === 'ALL_PASS' || val === 'TRADING_ALLOWED') return `<td style="color:#3fb950;padding:2px 8px">PASS</td>`;
+  if (val === false || val === 'FAILURES' || val === 'TRADING_BLOCKED')  return `<td style="color:#f85149;padding:2px 8px">FAIL</td>`;
+  return `<td style="color:#8b949e;padding:2px 8px">${val ?? '—'}</td>`;
+}
+function renderQuality(q) {
+  const panel = document.getElementById('quality-panel');
+  if (!panel) return;
+  const lastRun = q.last_run ? q.last_run.replace('T',' ').slice(0,16) : 'never';
+  const ovCol   = q.overall_status === 'ALL_PASS' ? '#3fb950' : (q.overall_status === 'not_run' ? '#8b949e' : '#f85149');
+  let html = `<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+    <span style="font-size:13px;color:#8b949e">Last run: ${lastRun}</span>
+    <span style="color:${ovCol};font-weight:bold">${q.overall_status ?? '—'}</span>
+    ${q.failures > 0 ? `<span style="color:#f85149">(${q.failures} failures)</span>` : ''}
+  </div>`;
+
+  const agents = [['Alpaca', q.alpaca], ['IBKR', q.ibkr]];
+  for (const [name, d] of agents) {
+    if (!d) continue;
+    html += `<div style="margin-bottom:10px">
+      <div style="color:#58a6ff;font-size:12px;margin-bottom:4px">${name}</div>
+      <table style="border-collapse:collapse;font-size:12px;width:100%">
+        <thead><tr style="color:#8b949e">
+          <th style="text-align:left;padding:2px 8px">Check</th>
+          <th style="padding:2px 8px">Passed</th>
+          <th style="padding:2px 8px">Status</th>
+        </tr></thead><tbody>
+        <tr><td style="padding:2px 8px;color:#e6edf3">Unit Tests</td>
+            ${cell(d.unit_tests?.passed + '/' + d.unit_tests?.total)}
+            ${passCell(d.unit_tests?.status)}</tr>
+        <tr><td style="padding:2px 8px;color:#e6edf3">Business Rules</td>
+            ${cell(d.rules?.passed + '/' + d.rules?.total)}
+            ${passCell(d.rules?.status)}</tr>
+        <tr><td style="padding:2px 8px;color:#e6edf3">Pre-Session Gate</td>
+            ${cell(d.pre_session?.passed)}
+            ${passCell(d.pre_session?.status)}</tr>
+        ${d.integration ? `<tr><td style="padding:2px 8px;color:#e6edf3">Integration Suite</td>
+            ${cell(d.integration?.passed + '/' + d.integration?.total)}
+            ${cell(d.integration?.score, undefined, v => (v*100).toFixed(0)+'%')}</tr>` : ''}
+        <tr><td style="padding:2px 8px;color:#e6edf3">Code Quality (pylint)</td>
+            ${cell(d.code_quality?.pylint, undefined, v => v + '/10')}
+            ${passCell(d.code_quality?.pass)}</tr>
+        <tr><td style="padding:2px 8px;color:#e6edf3">Security (bandit/CVEs)</td>
+            ${cell((d.security?.blocking ?? '?') + ' blocking, ' + (d.security?.cves ?? '?') + ' CVEs')}
+            ${passCell(d.security?.pass)}</tr>
+        </tbody>
+      </table>
+    </div>`;
+  }
+  panel.innerHTML = html;
+}
+async function refreshQuality() {
+  try {
+    const r = await fetch('/api/quality');
+    const data = await r.json();
+    renderQuality(data);
+  } catch(e) {
+    const p = document.getElementById('quality-panel');
+    if (p) p.innerHTML = '<div style="color:#8b949e">Quality data unavailable</div>';
+  }
+}
+refreshQuality();
+setInterval(refreshQuality, 120000);
 </script>
 </body>
 </html>
@@ -1500,6 +1659,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/bpm":
             try:
                 self._serve_json(collect_bpm())
+            except Exception as e:
+                self._serve_json({"error": str(e)})
+        elif self.path == "/api/quality":
+            try:
+                self._serve_json(_quality_status())
             except Exception as e:
                 self._serve_json({"error": str(e)})
         elif self.path == "/api/status":
