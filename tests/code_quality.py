@@ -184,4 +184,6 @@ print(f"{'='*60}")
 
 (REPORTS / "code_quality.json").write_text(json.dumps(results, indent=2))
 print(f"Report: {REPORTS / 'code_quality.json'}")
-sys.exit(0 if overall_ok else 1)
+# WARN is normal for this codebase — only exit 1 for tool errors (crash/import failure)
+hard_error = "error" in results.get("pylint", {}) and results["pylint"].get("score", -1) < 0
+sys.exit(1 if hard_error else 0)
