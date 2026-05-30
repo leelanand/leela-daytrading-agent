@@ -141,13 +141,32 @@ def _avg_volume(symbol: str, days: int = 10) -> tuple[float | None, int | None]:
         return None, None
 
 
-def _sector(symbol: str) -> str:
+def _symbol_info(symbol: str) -> tuple[str, str]:
+    """Returns (sector, float_tier) in one yf.info call.
+    float_tier: 'low' (<20M shares), 'mid' (20-100M), 'large' (>100M)."""
     try:
-        info = yf.Ticker(symbol).info
-        return info.get("sector", "Unknown") or "Unknown"
+        info    = yf.Ticker(symbol).info
+        sector  = info.get("sector", "Unknown") or "Unknown"
+        shares  = info.get("floatShares") or info.get("sharesOutstanding") or 0
+        shares_m = shares / 1_000_000
+        if shares_m <= 0:
+            tier = "unknown"
+        elif shares_m < 20:
+            tier = "low"
+        elif shares_m <= 100:
+            tier = "mid"
+        else:
+            tier = "large"
+        return sector, tier
     except Exception:
-        return "Unknown"
+        return "Unknown", "unknown"
 
+
+_CATALYST_KEYWORDS = {
+    "earnings", "beat", "beats", "guidance", "raised", "raise", "upgrade", "upgraded",
+    "fda", "approved", "approval", "clearance", "acquisition", "acquires", "merger",
+    "contract", "partnership", "deal", "revenue", "record", "buyout", "takeover",
+}
 
 def _news(symbol: str) -> list[str]:
     try:
@@ -158,6 +177,11 @@ def _news(symbol: str) -> list[str]:
         return [n["headline"] for n in items[:3]]
     except Exception:
         return []
+
+def _has_catalyst(headlines: list[str]) -> bool:
+    """True if any headline contains a recognised catalyst keyword."""
+    combined = " ".join(headlines).lower()
+    return any(kw in combined for kw in _CATALYST_KEYWORDS)
 
 
 def _classify_setup(gap_pct: float, rel_volume: float, has_news: bool, vol_trend_ratio: float,
@@ -269,11 +293,12 @@ def scan_for_candidates() -> list[dict]:
             if not afternoon_cont and move_from_open > MAX_MOVE_BEFORE_ENTRY_PCT:
                 continue
 
-            below_vwap = price < vwap if (VWAP_PREFERENCE and vwap > 0) else False
-            sector     = _sector(symbol)
-            news       = _news(symbol)
-            setup_type = _classify_setup(gap_pct, rel_volume, len(news) > 0, vol_trend_ratio,
-                                         price, vwap, day_high, open_price)
+            below_vwap          = price < vwap if (VWAP_PREFERENCE and vwap > 0) else False
+            sector, float_tier  = _symbol_info(symbol)
+            news                = _news(symbol)
+            has_catalyst        = _has_catalyst(news)
+            setup_type          = _classify_setup(gap_pct, rel_volume, len(news) > 0, vol_trend_ratio,
+                                                  price, vwap, day_high, open_price)
 
             candidates.append({
                 "symbol":             symbol,
@@ -292,8 +317,10 @@ def scan_for_candidates() -> list[dict]:
                 "vwap":               round(vwap, 2),
                 "below_vwap":         below_vwap,
                 "sector":             sector,
+                "float_tier":         float_tier,
                 "news":               news,
                 "has_news":           len(news) > 0,
+                "has_catalyst":       has_catalyst,
                 "setup_type":         setup_type,
                 "is_afternoon_setup": afternoon_cont,
                 "_is_top_gapper":     symbol in gappers,
@@ -303,8 +330,13 @@ def scan_for_candidates() -> list[dict]:
         except Exception:
             continue
 
-    candidates.sort(key=lambda x: x["gap_pct"] * x["rel_volume"], reverse=True)
+    # Catalyst stocks get a 15% ranking boost — breakaway gaps (news/earnings) have
+    # only ~35% fill rate vs 70%+ for no-catalyst gaps, so they deserve priority.
+    candidates.sort(key=lambda x: x["gap_pct"] * x["rel_volume"] * (1.15 if x.get("has_catalyst") else 1.0), reverse=True)
     min_rvol_used = _afternoon_min_rvol()
+    n_catalyst = sum(1 for c in candidates if c.get("has_catalyst"))
     print(f"   Found {len(candidates)} momentum candidates "
-          f"(gap >{MIN_GAP_PCT}%, vol >{min_rvol_used:.1f}x, spread <{MAX_SPREAD_PCT}%)")
-    return candidates[:10]
+          f"(gap >{MIN_GAP_PCT}%, vol >{min_rvol_used:.1f}x, spread <{MAX_SPREAD_PCT}%, "
+          f"{n_catalyst} with catalyst)"
+          f" — promoting top 25 to scoring")
+    return candidates[:25]

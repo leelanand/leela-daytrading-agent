@@ -1441,24 +1441,37 @@ def _scan_and_trade(paper_mode: bool = False):
         ok, portfolio, reason = can_trade()
         if not ok:
             print(f"   [RISK] {reason} — stopping.")
+            idx       = candidates.index(pick)
+            remaining = candidates[idx:]
             if "Max positions" in reason or "Daily loss limit" in reason:
-                idx       = candidates.index(pick)
-                remaining = candidates[idx:]
                 if remaining:
                     queue_candidates(remaining, reason)
                     print(f"   [MORNING QUEUE] {len(remaining)} remaining candidate(s) queued for tomorrow: "
                           f"{', '.join(c['symbol'] for c in remaining)}")
                     log_audit("MORNING_QUEUE", details={"queued": [c["symbol"] for c in remaining], "reason": reason})
+                    for _sk in remaining:
+                        _reject(_sk["symbol"], _sk.get("score", 0), _sk.get("setup_type", "unknown"),
+                                "can_trade_gate", "queued_tomorrow", observed=reason)
+            else:
+                for _sk in remaining:
+                    _reject(_sk["symbol"], _sk.get("score", 0), _sk.get("setup_type", "unknown"),
+                            "can_trade_gate", "risk_stop", observed=reason)
             break
 
         # LOW_VOLUME / HIGH_VOL trade caps
         if low_vol_mode and trades_this_scan >= LOW_VOLUME_MAX_TRADES:
             print(f"   [LOW_VOLUME] {LOW_VOLUME_MAX_TRADES} trade cap reached — stopping scan.")
             log_audit("SCAN_CAPPED", details={"reason": "low_volume_max_trades"})
+            for _sk in candidates[candidates.index(pick):]:
+                _reject(_sk["symbol"], _sk.get("score", 0), _sk.get("setup_type", "unknown"),
+                        "scan_cap_gate", "scan_capped", observed="low_volume_max_trades")
             break
         if high_vol_mode and trades_this_scan >= HIGH_VOL_MAX_TRADES:
             print(f"   [HIGH_VOL] {HIGH_VOL_MAX_TRADES} trade cap reached — stopping scan.")
             log_audit("SCAN_CAPPED", details={"reason": "high_vol_max_trades"})
+            for _sk in candidates[candidates.index(pick):]:
+                _reject(_sk["symbol"], _sk.get("score", 0), _sk.get("setup_type", "unknown"),
+                        "scan_cap_gate", "scan_capped", observed="high_vol_max_trades")
             break
 
         symbol        = pick["symbol"]
@@ -1594,11 +1607,21 @@ def _scan_and_trade(paper_mode: bool = False):
         mom = analyse_momentum(symbol)
         print(f"   Momentum {symbol}: {mom['strength']} — {mom['reason']}")
         if mom["strength"] not in MIN_MOMENTUM_TO_TRADE:
-            _reject(symbol, score, setup_type, "momentum_gate", "momentum_weak",
-                    observed=mom["strength"], threshold=str(MIN_MOMENTUM_TO_TRADE),
-                    is_experimental=is_experimental)
-            print(f"   [SKIP] {symbol}: momentum {mom['strength']} — not tradeable")
-            continue
+            # Continuation bypass: stock already up >4% with strong RVOL above VWAP is an
+            # established intraday trend — momentary strength dip is noise, not reversal.
+            _mfo  = pick.get("move_from_open", 0.0)
+            _rvol = pick.get("rel_volume", 0.0)
+            _px   = pick.get("price", 0.0)
+            _vw   = pick.get("vwap", 0.0)
+            if _mfo >= 4.0 and _rvol >= 1.5 and _px > _vw > 0:
+                print(f"   [MOMENTUM BYPASS] {symbol}: up {_mfo:.1f}% RVOL {_rvol:.1f}x above VWAP — "
+                      f"continuation trend, bypassing momentum gate (was: {mom['strength']})")
+            else:
+                _reject(symbol, score, setup_type, "momentum_gate", "momentum_weak",
+                        observed=mom["strength"], threshold=str(MIN_MOMENTUM_TO_TRADE),
+                        is_experimental=is_experimental)
+                print(f"   [SKIP] {symbol}: momentum {mom['strength']} — not tradeable")
+                continue
 
         # Fetch 1-min bars (needed for ORB, pullback, ATR, failed-breakout checks)
         from momentum import _get_1min_bars
@@ -1635,10 +1658,19 @@ def _scan_and_trade(paper_mode: bool = False):
         breakout_price = pick.get("open_price", price)
         fb_failed, fb_reason = detect_failed_breakout(bars_1min, breakout_price)
         if fb_failed:
-            print(f"   [SKIP] {symbol}: failed breakout — {fb_reason}")
-            _reject(symbol, score, setup_type, "breakout_gate", "failed_breakout",
-                    observed=fb_reason, is_experimental=is_experimental)
-            continue
+            # Continuation bypass: strongly trending stock above VWAP — initial ORB pullback
+            # is normal consolidation within an uptrend, not a failed breakout.
+            _mfo_fb  = pick.get("move_from_open", 0.0)
+            _rvol_fb = pick.get("rel_volume", 0.0)
+            if _mfo_fb >= 4.0 and _rvol_fb >= 1.5 and price > vwap > 0:
+                print(f"   [BREAKOUT BYPASS] {symbol}: up {_mfo_fb:.1f}% RVOL {_rvol_fb:.1f}x above VWAP — "
+                      f"skipping failed_breakout for strongly trending stock (was: {fb_reason})")
+                fb_failed = False
+            else:
+                print(f"   [SKIP] {symbol}: failed breakout — {fb_reason}")
+                _reject(symbol, score, setup_type, "breakout_gate", "failed_breakout",
+                        observed=fb_reason, is_experimental=is_experimental)
+                continue
 
         # Pullback check (spec point 2) — only for HIGH and ELITE tiers
         pullback_result: dict = {"pullback_quality": "N/A", "pullback_detected": False}
@@ -1718,7 +1750,18 @@ def _scan_and_trade(paper_mode: bool = False):
                 # Non-CHOPPY: only risky setups need ORB/pullback confirmation
                 # After 12:00 ET, experimental (override) entries above threshold no longer
                 # require ORB — ORB is a morning-only signal and VWAP/drift guards apply instead.
-                orb_pb_confirmed   = orb_breakout or pb_detected
+                # HOD breakout bypass: stock consolidating near HOD is itself confirmation.
+                _hod_near = False
+                _mfo_hod  = pick.get("move_from_open", 0.0)
+                _rvol_hod = pick.get("rel_volume", 0.0)
+                if bars_1min and _mfo_hod >= 4.0 and _rvol_hod >= 1.5:
+                    _hod_px = max((b.get("high", b.get("close", 0)) for b in bars_1min), default=0)
+                    if _hod_px > 0 and ((_hod_px - price) / _hod_px * 100) <= 2.0:
+                        _hod_near = True
+                        print(f"   [HOD BYPASS] {symbol}: up {_mfo_hod:.1f}% RVOL {_rvol_hod:.1f}x "
+                              f"within 2% of HOD — HOD consolidation counts as confirmation")
+
+                orb_pb_confirmed   = orb_breakout or pb_detected or _hod_near
                 try:
                     from zoneinfo import ZoneInfo as _ZI2
                     _afternoon = datetime.now(_ZI2("America/New_York")).hour >= 12
@@ -1726,10 +1769,10 @@ def _scan_and_trade(paper_mode: bool = False):
                     _afternoon = False
                 needs_confirmation = score_below_min or low_vol_mode or (is_experimental and not _afternoon)
                 if needs_confirmation and not orb_pb_confirmed:
-                    print(f"   [SKIP] {symbol}: risky setup requires ORB/pullback confirmation "
+                    print(f"   [SKIP] {symbol}: risky setup requires ORB/pullback/HOD confirmation "
                           f"(score={score}, regime={regime}, experimental={is_experimental})")
                     _reject(symbol, score, setup_type, "orb_pullback_gate", "orb_pullback_required",
-                            observed=f"orb={orb_breakout},pb={pb_detected}",
+                            observed=f"orb={orb_breakout},pb={pb_detected},hod={_hod_near}",
                             is_experimental=is_experimental)
                     continue
                 # Track confirmation type for non-CHOPPY trades
@@ -1737,6 +1780,8 @@ def _scan_and_trade(paper_mode: bool = False):
                     confirmation_type = "ORB"
                 elif pb_detected:
                     confirmation_type = "PULLBACK"
+                elif _hod_near:
+                    confirmation_type = "HOD_CONSOLIDATION"
 
         # ATR-aware stop (spec point 7)
         atr_stop = atr_aware_stop_pct(bars_1min, price)
