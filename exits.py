@@ -9,6 +9,8 @@ Exit conditions checked (beyond the bracket's fixed stop/TP):
 import json
 from datetime import datetime, timezone
 from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import GetOrdersRequest
+from alpaca.trading.enums import QueryOrderStatus
 from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, PAPER_TRADING,
     TRAILING_STOP_TRIGGER_PCT, TRAILING_STOP_DISTANCE_PCT,
@@ -120,13 +122,33 @@ def check_exits() -> list[str]:
     return to_close
 
 
+def _cancel_symbol_orders(client, symbol: str):
+    """Cancel only THIS symbol's open orders (its bracket stop/TP legs) before closing.
+
+    Previously used client.cancel_orders() which cancels EVERY open order account-wide —
+    so exiting one position stripped the protective stop-loss/take-profit brackets off all
+    other open positions, leaving them naked. (Fixed 2026-06-04.)
+    """
+    try:
+        orders = client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol]))
+        for o in orders:
+            try:
+                client.cancel_order_by_id(o.id)
+            except Exception:
+                pass
+    except Exception as e:
+        # Do NOT fall back to cancel-all — better to let close_position handle it than to
+        # strip stops off every other position.
+        log_audit("EXIT_CANCEL_WARN", symbol, {"error": str(e)})
+
+
 def execute_exits(symbols: list[str]):
     if not symbols:
         return
     client = _client()
     for symbol in symbols:
         try:
-            client.cancel_orders()
+            _cancel_symbol_orders(client, symbol)
             client.close_position(symbol)
             release_symbol(symbol)
             log_audit("EXIT_EXECUTED", symbol)

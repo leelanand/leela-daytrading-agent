@@ -440,6 +440,32 @@ def _make_trace_entry(ctx: dict, result: dict, source: str, regime: str, broad: 
 
 # ── Claude batch call ─────────────────────────────────────────────────────────
 
+def _salvage_json_array(text: str) -> list[dict]:
+    """Extract every complete JSON object from a possibly-truncated array string.
+
+    Used when the model response was cut off: decoding the leading complete
+    objects lets us still score most of the batch instead of dropping all of it.
+    """
+    objs: list[dict] = []
+    start = text.find("[")
+    if start == -1:
+        return objs
+    decoder = json.JSONDecoder()
+    i, n = start + 1, len(text)
+    while i < n:
+        while i < n and text[i] in " \t\r\n,":
+            i += 1
+        if i >= n or text[i] == "]":
+            break
+        try:
+            obj, end = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            break  # reached the truncated tail
+        objs.append(obj)
+        i = end
+    return objs
+
+
 def _call_claude(
     batch_ctx:  list[dict],
     broad:      dict,
@@ -499,9 +525,17 @@ def _call_claude(
         + json.dumps(compact, separators=(",", ":"))
     )
 
+    # Size the token budget to the batch. Measured real usage is ~110 output
+    # tokens/symbol (a 12-symbol batch = ~1330 tokens); the old fixed 1200 cap
+    # truncated the response mid-string for batches over ~4-5 symbols, breaking
+    # json.loads and silently dropping the WHOLE batch to local scores.
+    # 200/symbol is ~2x real usage — safe against long reason strings without
+    # wasteful headroom; the salvage parser below covers any rare overflow. (Fixed 2026-06-02.)
+    max_tokens = min(4096, 200 * len(compact) + 600)
+
     resp = _client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=1200,
+        max_tokens=max_tokens,
         system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": prompt}],
     )
@@ -511,9 +545,18 @@ def _call_claude(
         text = text.split("```")[1]
         if text.startswith("json"):
             text = text[4:]
+    text = text.strip()
 
-    picks = json.loads(text.strip())
-    return {p["symbol"]: p for p in picks}
+    try:
+        picks = json.loads(text)
+    except json.JSONDecodeError:
+        # Safety net: salvage every complete object from a truncated array so a
+        # partial response still scores most of the batch instead of none of it.
+        picks = _salvage_json_array(text)
+        if getattr(resp, "stop_reason", None) == "max_tokens":
+            print(f"   [ANALYST] Claude response hit max_tokens ({max_tokens}); "
+                  f"salvaged {len(picks)}/{len(compact)} symbols")
+    return {p["symbol"]: p for p in picks if isinstance(p, dict) and "symbol" in p}
 
 
 # ── Main scoring function ─────────────────────────────────────────────────────

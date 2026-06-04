@@ -67,6 +67,21 @@ LIVE_ORDER_EARLIEST_ET = (9,  35)   # 09:35 ET / 14:35 BST — earlier entry win
 LIVE_ORDER_LATEST_ET   = (15, 45)   # 15:45 ET / 20:45 BST — close to EOD close time
 
 # ── Paper trading behaviour flags ────────────────────────────────────────────
+# Market-order entries for the paper BASELINE: a 0.1% limit on delayed (yfinance/IEX)
+# quotes systematically failed to fill momentum runners — filling only the names that
+# DIDN'T move (adverse selection), which would poison the win-rate baseline. Market
+# orders guarantee representative fills. Live keeps limit orders (config.py default);
+# switch live to a slippage-capped marketable limit once real-time SIP data is in.
+# (Added 2026-06-04.)
+USE_LIMIT_ORDERS          = False
+
+# Trailing stop NEUTRALISED for the baseline phase: arm threshold set above any reachable
+# gain (TP exits at +2.5%), so trailing never fires. This isolates the base +2.5%/-1.5%
+# bracket so we can measure the true entry edge + MFE distribution before adding a trailing
+# layer. Loss-cutting exits (momentum-flip, rapid-invalidation, time-exit) stay ACTIVE —
+# they cut losers, not winners. Re-tune with real MFE data (see backlog). (2026-06-04)
+TRAILING_STOP_TRIGGER_PCT = 0.99
+
 CROSS_AGENT_GATE_ENABLED  = False   # allow both agents to trade same symbol independently
 ALLOW_REENTRY             = True    # allow re-buying a symbol already held (cycling)
 MAX_PORTFOLIO_UTILISATION = 0.95    # stop new entries when deployed >= 95% of portfolio

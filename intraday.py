@@ -85,6 +85,12 @@ def get_intraday_alignment() -> tuple[str, str]:
             import yfinance as yf
             spy_df = yf.download("SPY", period="1d", interval="1m", progress=False, auto_adjust=True)
             qqq_df = yf.download("QQQ", period="1d", interval="1m", progress=False, auto_adjust=True)
+            # Flatten single-symbol MultiIndex columns or df["Close"] returns a frame,
+            # not a series, breaking the alignment (-> "Insufficient SPY bars"). (Fixed 2026-06-04.)
+            if getattr(spy_df.columns, "nlevels", 1) > 1:
+                spy_df.columns = spy_df.columns.droplevel(1)
+            if getattr(qqq_df.columns, "nlevels", 1) > 1:
+                qqq_df.columns = qqq_df.columns.droplevel(1)
             if not spy_df.empty and len(spy_df) >= 5:
                 spy_closes = spy_df["Close"].dropna().tolist()[-20:]
                 spy_vols   = spy_df["Volume"].tolist()[-20:]

@@ -72,3 +72,12 @@ DAILY_LOSS_LIMIT = 0.02
 # force-close at 15:44.
 LIVE_ORDER_EARLIEST_ET = (9,  45)   # 09:45 ET / 14:45 BST — no live orders before this
 LIVE_ORDER_LATEST_ET   = (15, 30)   # 15:30 ET / 20:30 BST — no new entries after this
+
+# ── Live entry execution: slippage-capped marketable limit ───────────────────
+# Buy limit set 0.3% above quote: fills immediately on liquid names (crosses the
+# spread) but NEVER pays more than 0.3% above — protects against filling a spike.
+# Realized cost is ~half-spread (far below 0.3%); the cap only binds on a violent
+# move. Brackets are anchored to the entry price (executor.py), so R:R stays exact.
+# Requires real-time data to be meaningful — set live alongside the SIP upgrade. (2026-06-04)
+USE_LIMIT_ORDERS  = True
+LIMIT_OFFSET_PCT  = 0.003

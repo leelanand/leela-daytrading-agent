@@ -45,6 +45,12 @@ def _get_1min_bars(symbol: str, n: int) -> list[dict]:
     try:
         import yfinance as yf
         df = yf.download(symbol, period="1d", interval="1m", progress=False, auto_adjust=True)
+        # Modern yfinance returns MultiIndex columns ('Open','AAPL') even for a single
+        # symbol; flatten so r["Open"] gives a scalar, not a Series. Without this the
+        # parse below raised TypeError -> bare except -> [] -> "Only 0 bars" and the
+        # ORB/momentum confirmation gates could never pass. (Fixed 2026-06-04.)
+        if getattr(df.columns, "nlevels", 1) > 1:
+            df.columns = df.columns.droplevel(1)
         if df.empty or len(df) < 5:
             return []
         rows = [{"open": float(r["Open"]), "high": float(r["High"]),

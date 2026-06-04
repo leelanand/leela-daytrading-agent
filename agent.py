@@ -1623,19 +1623,25 @@ def _scan_and_trade(paper_mode: bool = False):
                 print(f"   [SKIP] {symbol}: momentum {mom['strength']} — not tradeable")
                 continue
 
-        # Fetch 1-min bars (needed for ORB, pullback, ATR, failed-breakout checks)
+        # Fetch 1-min bars. ORB needs the OPENING bars (09:30+); ATR/pullback/failed-
+        # breakout need the RECENT tail. yfinance period="1d" downloads the whole session
+        # anyway, so pulling the full day is free — we just stop discarding the opening
+        # bars. Feeding ORB the last-30 window computed the "opening range" from a mid-
+        # session window, making the ORB confirmation wrong all day. (Fixed 2026-06-04.)
         from momentum import _get_1min_bars
         bars_1min = []
+        session_bars = []
         try:
-            bars_1min = _get_1min_bars(symbol, 30)   # 30 bars covers ORB + ATR
+            session_bars = _get_1min_bars(symbol, 400)               # full session, open→now
+            bars_1min    = session_bars[-30:] if len(session_bars) > 30 else session_bars
         except Exception:
             pass
 
 
-        # ORB check (spec point 3) — informational quality signal, not a blocker
+        # ORB check — opening range from session-open bars (not the recent tail)
         orb_status: dict = {}
         try:
-            orb_status = get_orb_status(bars_1min)
+            orb_status = get_orb_status(session_bars)
         except Exception:
             orb_status = {"orb_breakout": False}
         orb_breakout = orb_status.get("orb_breakout", False)

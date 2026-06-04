@@ -504,6 +504,14 @@ if hasattr(_mode, "DAILY_LOSS_LIMIT"):
     DAILY_LOSS_LIMIT      = _mode.DAILY_LOSS_LIMIT
 if hasattr(_mode, "MAX_TRADES_PER_DAY"):
     MAX_TRADES_PER_DAY    = _mode.MAX_TRADES_PER_DAY
+if hasattr(_mode, "USE_LIMIT_ORDERS"):
+    USE_LIMIT_ORDERS      = _mode.USE_LIMIT_ORDERS
+if hasattr(_mode, "LIMIT_OFFSET_PCT"):
+    LIMIT_OFFSET_PCT      = _mode.LIMIT_OFFSET_PCT
+if hasattr(_mode, "TRAILING_STOP_TRIGGER_PCT"):
+    TRAILING_STOP_TRIGGER_PCT  = _mode.TRAILING_STOP_TRIGGER_PCT
+if hasattr(_mode, "TRAILING_STOP_DISTANCE_PCT"):
+    TRAILING_STOP_DISTANCE_PCT = _mode.TRAILING_STOP_DISTANCE_PCT
 
 # Paper trading behaviour flags — off by default (live), overridden by config_paper.py
 CROSS_AGENT_GATE_ENABLED  = True   # live: block duplicate cross-agent exposure

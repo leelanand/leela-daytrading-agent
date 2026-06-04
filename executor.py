@@ -57,9 +57,12 @@ def place_bracket_order(
 ):
     sp     = stop_pct        if stop_pct        is not None else STOP_LOSS_PCT
     tp     = take_profit_pct if take_profit_pct is not None else TAKE_PROFIT_PCT
-    stop   = round(price * (1 - sp), 2)
-    target = round(price * (1 + tp), 2)
+    # Anchor stop/target to the ENTRY price (the limit we'll actually pay), not the raw
+    # quote, so the 1.5%/2.5% risk:reward is preserved exactly regardless of the limit
+    # offset or slippage. For market orders entry==quote, so this is a no-op. (Fixed 2026-06-04.)
     entry  = round(price * (1 + LIMIT_OFFSET_PCT), 2) if USE_LIMIT_ORDERS else round(price, 2)
+    stop   = round(entry * (1 - sp), 2)
+    target = round(entry * (1 + tp), 2)
 
     # Safety guard — must pass before any broker object is created
     ok, reason = _validate_prices(symbol, entry, entry * 0.999, entry * 1.001, stop, target, shares)
