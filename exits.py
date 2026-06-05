@@ -142,6 +142,27 @@ def _cancel_symbol_orders(client, symbol: str):
         log_audit("EXIT_CANCEL_WARN", symbol, {"error": str(e)})
 
 
+def _close_with_retry(client, symbol: str, attempts: int = 5):
+    """Close a position, retrying while the just-cancelled bracket legs still hold the qty.
+    cancel_order_by_id returns before the broker releases `held_for_orders`, so an immediate
+    close can fail with 'insufficient qty available'. Wait + retry until the hold clears.
+    (Fixed 2026-06-05.)"""
+    import time
+    last = None
+    for i in range(attempts):
+        try:
+            client.close_position(symbol)
+            return
+        except Exception as e:
+            last = e
+            if "insufficient qty" in str(e).lower() or "held_for_orders" in str(e).lower():
+                time.sleep(1.0 + i * 0.5)   # let the cancel settle, then retry
+                continue
+            raise
+    if last:
+        raise last
+
+
 def execute_exits(symbols: list[str]):
     if not symbols:
         return
@@ -149,7 +170,7 @@ def execute_exits(symbols: list[str]):
     for symbol in symbols:
         try:
             _cancel_symbol_orders(client, symbol)
-            client.close_position(symbol)
+            _close_with_retry(client, symbol)
             release_symbol(symbol)
             log_audit("EXIT_EXECUTED", symbol)
             print(f"   [CLOSED] {symbol}")
