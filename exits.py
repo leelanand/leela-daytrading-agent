@@ -16,7 +16,7 @@ from config import (
     TRAILING_STOP_TRIGGER_PCT, TRAILING_STOP_DISTANCE_PCT,
     TIME_EXIT_MINS, EXIT_STATE_FILE, RAPID_INVALIDATION_MINS,
 )
-from logger import log_audit
+from logger import log_audit, log_trade
 from shared_lock import refresh_symbols, release_symbol
 
 
@@ -162,8 +162,65 @@ def execute_exits(symbols: list[str]):
             print(f"   [EXIT ERROR] {symbol}: {e}")
 
 
+def reconcile_closed_trades() -> int:
+    """Pair today's filled BUY/SELL orders (FIFO) and log completed round-trips to the
+    trades table — the source for win_rate / performance / the learning loop. Captures
+    BOTH broker bracket fills (stop/TP) and software exits. Idempotent: each SELL order id
+    is logged once. Without this, exits were never recorded and win_rate stayed 0 forever.
+    (Added 2026-06-05.)"""
+    import json as _json
+    from collections import defaultdict, deque
+    from datetime import date as _date
+    seen_file = EXIT_STATE_FILE.parent / "logged_exits.json"
+    try:
+        seen = set(_json.loads(seen_file.read_text())) if seen_file.exists() else set()
+    except Exception:
+        seen = set()
+    client = _client()
+    try:
+        orders = client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=500))
+    except Exception as e:
+        log_audit("RECONCILE_ERROR", "", {"error": str(e)})
+        return 0
+    today = _date.today().isoformat()
+    fills = [o for o in orders
+             if getattr(o, "filled_at", None) and str(o.filled_at)[:10] == today
+             and o.filled_qty and float(o.filled_qty) > 0 and o.filled_avg_price]
+    fills.sort(key=lambda o: o.filled_at)
+    buys: dict = defaultdict(deque)
+    logged = 0
+    for o in fills:
+        sym = o.symbol
+        qty = int(float(o.filled_qty))
+        px  = float(o.filled_avg_price)
+        if str(o.side).upper().endswith("BUY"):
+            buys[sym].append([qty, px])
+        else:  # SELL — a close
+            if str(o.id) in seen:
+                continue
+            remaining, cost, matched = qty, 0.0, 0
+            while remaining > 0 and buys[sym]:
+                lot = buys[sym][0]
+                take = min(remaining, lot[0])
+                cost += take * lot[1]; matched += take; remaining -= take; lot[0] -= take
+                if lot[0] == 0:
+                    buys[sym].popleft()
+            if matched > 0:
+                log_trade(sym, matched, cost / matched, px, reason="reconciled")
+                logged += 1
+            seen.add(str(o.id))
+    try:
+        seen_file.write_text(_json.dumps(list(seen)))
+    except Exception:
+        pass
+    if logged:
+        log_audit("TRADES_RECONCILED", "", {"logged": logged})
+    return logged
+
+
 def monitor_positions():
     """Entry point for --monitor mode."""
+    reconcile_closed_trades()  # record any positions that closed since last cycle
     # Refresh shared lock so the other agent sees our current holdings accurately
     refresh_symbols({p.symbol for p in _client().get_all_positions()})
     to_close = check_exits()
