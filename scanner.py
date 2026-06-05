@@ -184,6 +184,25 @@ def _has_catalyst(headlines: list[str]) -> bool:
     return any(kw in combined for kw in _CATALYST_KEYWORDS)
 
 
+_TOD_VOL_CURVE = [(0,0.0),(5,0.03),(15,0.075),(30,0.13),(60,0.21),(90,0.28),(120,0.34),
+                  (150,0.40),(210,0.52),(270,0.63),(330,0.77),(360,0.85),(390,1.0)]
+
+def _tod_volume_fraction(mins: float) -> float:
+    """Expected fraction of a full day's volume traded by `mins` after the 09:30 open.
+    US intraday volume is U-shaped (front + close heavy), so this is non-linear. Used to
+    time-of-day normalize RVOL so early-session activity isn't understated. (Added 2026-06-05.)"""
+    if mins <= 0:
+        return 0.0001
+    if mins >= 390:
+        return 1.0
+    pts = _TOD_VOL_CURVE
+    for i in range(1, len(pts)):
+        if mins <= pts[i][0]:
+            (m0, f0), (m1, f1) = pts[i-1], pts[i]
+            return f0 + (f1 - f0) * (mins - m0) / (m1 - m0)
+    return 1.0
+
+
 def _classify_setup(gap_pct: float, rel_volume: float, has_news: bool, vol_trend_ratio: float,
                     price: float = 0.0, vwap: float = 0.0,
                     day_high: float = 0.0, open_price: float = 0.0) -> str:
@@ -277,9 +296,14 @@ def scan_for_candidates() -> list[dict]:
             now_et          = datetime.now(ET)
             market_open     = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
             mins_elapsed    = max(1, (now_et - market_open).total_seconds() / 60)
-            projected_vol   = effective_vol * (390 / mins_elapsed)
-            vol_trend_ratio = projected_vol / avg_vol if avg_vol and avg_vol > 0 else 0
-            rel_volume      = effective_vol / avg_vol if avg_vol and avg_vol > 0 else 0
+            # Time-of-day normalized RVOL: compare volume-so-far to the volume we'd EXPECT
+            # by this point. Intraday volume is U-shaped (front+close heavy), so a flat
+            # mins/390 projection is wrong, and raw cumulative/avg made morning candidates
+            # look dead (~0.1x) and suppressed real momentum. One normalized measure now
+            # feeds BOTH the gate and scoring (they were inconsistent before). (Fixed 2026-06-05.)
+            tod_frac        = _tod_volume_fraction(mins_elapsed)
+            rel_volume      = (effective_vol / avg_vol) / tod_frac if (avg_vol and avg_vol > 0 and tod_frac > 0) else 0
+            vol_trend_ratio = rel_volume
             if vol_trend_ratio < _afternoon_min_rvol():
                 continue
 
