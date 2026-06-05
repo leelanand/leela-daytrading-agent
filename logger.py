@@ -7,6 +7,10 @@ from config import DB_PATH, AUDIT_LOG_FILE
 
 def init_db():
     con = sqlite3.connect(DB_PATH)
+    # WAL = safe concurrent readers+writers (both agents, ops, monitor phases all write);
+    # busy_timeout waits out a writer lock instead of erroring. (Hardened 2026-06-05.)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=30000")
     con.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
