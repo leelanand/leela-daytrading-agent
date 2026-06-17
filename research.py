@@ -199,7 +199,7 @@ def _synthesise(symbol_data: list[dict], macro: dict) -> list[dict]:
     )
 
     resp = _claude.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-haiku-4-5-20251001",
         max_tokens=5000,
         system=[{"type": "text", "text": RESEARCH_SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": prompt}],

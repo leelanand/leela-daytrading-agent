@@ -1,6 +1,6 @@
 {
   "suite": "alpaca_integration_tests",
-  "timestamp": "2026-05-30T10:45:46.470789+00:00",
+  "timestamp": "2026-05-30T12:22:38.332845+00:00",
   "total_run": 110,
   "total_passed": 106,
   "total_failed": 0,
@@ -11,7 +11,7 @@
     {
       "test_id": "01",
       "test_name": "Alpaca API Connectivity",
-      "timestamp": "2026-05-30T10:45:46.229924+00:00",
+      "timestamp": "2026-05-30T12:22:38.089414+00:00",
       "status": "PASS",
       "cases_run": 4,
       "cases_passed": 3,
@@ -46,7 +46,7 @@
     {
       "test_id": "02",
       "test_name": "Alpaca Snapshot Normalization",
-      "timestamp": "2026-05-30T10:45:46.445738+00:00",
+      "timestamp": "2026-05-30T12:22:38.312802+00:00",
       "status": "PASS",
       "cases_run": 14,
       "cases_passed": 14,
@@ -119,7 +119,7 @@
     {
       "test_id": "03",
       "test_name": "Alpaca Scanner Data Path",
-      "timestamp": "2026-05-30T10:45:46.445738+00:00",
+      "timestamp": "2026-05-30T12:22:38.312802+00:00",
       "status": "PASS",
       "cases_run": 9,
       "cases_passed": 9,
@@ -170,7 +170,7 @@
     {
       "test_id": "04",
       "test_name": "Config Validation",
-      "timestamp": "2026-05-30T10:45:46.445738+00:00",
+      "timestamp": "2026-05-30T12:22:38.312802+00:00",
       "status": "PASS",
       "cases_run": 11,
       "cases_passed": 11,
@@ -238,7 +238,7 @@
     {
       "test_id": "05",
       "test_name": "Gate Logic Phase 1 Bypasses",
-      "timestamp": "2026-05-30T10:45:46.445738+00:00",
+      "timestamp": "2026-05-30T12:22:38.312802+00:00",
       "status": "PASS",
       "cases_run": 9,
       "cases_passed": 9,
@@ -289,7 +289,7 @@
     {
       "test_id": "06",
       "test_name": "Cross-Agent Code Parity",
-      "timestamp": "2026-05-30T10:45:46.445738+00:00",
+      "timestamp": "2026-05-30T12:22:38.312802+00:00",
       "status": "PASS",
       "cases_run": 19,
       "cases_passed": 19,
@@ -380,7 +380,7 @@
     {
       "test_id": "07",
       "test_name": "Holiday Regression",
-      "timestamp": "2026-05-30T10:45:46.445738+00:00",
+      "timestamp": "2026-05-30T12:22:38.312802+00:00",
       "status": "PASS",
       "cases_run": 11,
       "cases_passed": 11,
@@ -450,7 +450,7 @@
     {
       "test_id": "08",
       "test_name": "Alpaca Agent Readiness",
-      "timestamp": "2026-05-30T10:45:46.465679+00:00",
+      "timestamp": "2026-05-30T12:22:38.328830+00:00",
       "status": "PASS",
       "cases_run": 28,
       "cases_passed": 28,
@@ -577,7 +577,7 @@
     {
       "test_id": "09",
       "test_name": "Real-World Trading Gaps",
-      "timestamp": "2026-05-30T10:45:46.469767+00:00",
+      "timestamp": "2026-05-30T12:22:38.332845+00:00",
       "status": "PASS",
       "cases_run": 5,
       "cases_passed": 2,

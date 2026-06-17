@@ -534,7 +534,7 @@ def _call_claude(
     max_tokens = min(4096, 200 * len(compact) + 600)
 
     resp = _client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-haiku-4-5-20251001",
         max_tokens=max_tokens,
         system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": prompt}],

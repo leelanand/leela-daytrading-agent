@@ -1,6 +1,6 @@
 {
   "agent": "alpaca",
-  "timestamp": "2026-05-30T13:00:01.538475",
+  "timestamp": "2026-05-30T13:21:43.433176",
   "passed": 36,
   "warned": 9,
   "failed": 0,
@@ -11,7 +11,7 @@
     {
       "case": "feed_health_fresh",
       "status": "WARN",
-      "detail": "age=992.4min (max 10)"
+      "detail": "age=1014.1min (max 10)"
     },
     {
       "case": "feed_health_not_critical",
@@ -46,7 +46,7 @@
     {
       "case": "candidates_cache_fresh",
       "status": "WARN",
-      "detail": "age=1043.6min"
+      "detail": "age=1065.3min"
     },
     {
       "case": "all_candidates_have_required_fields",
@@ -131,12 +131,12 @@
     {
       "case": "gapper_cache_fresh",
       "status": "WARN",
-      "detail": "age=996.2min (max 90)"
+      "detail": "age=1017.9min (max 90)"
     },
     {
       "case": "research_cache_fresh",
       "status": "WARN",
-      "detail": "age=17.4h (max 8h)"
+      "detail": "age=17.8h (max 8h)"
     },
     {
       "case": "research_has_symbols",
@@ -166,7 +166,7 @@
     {
       "case": "audit_log_known_actions",
       "status": "WARN",
-      "detail": "25 unknown: ['PRESCAN_DONE', 'SCAN_DONE', 'PRE_SUBMIT_REJECT']"
+      "detail": "25 unknown: ['PRE_SUBMIT_REJECT', 'SCAN_DONE', 'PRESCAN_DONE']"
     },
     {
       "case": "audit_log_has_recent_entries",

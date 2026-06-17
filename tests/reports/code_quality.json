@@ -1,15 +1,15 @@
 {
   "agent": "alpaca",
-  "timestamp": "2026-05-30T12:09:26.913455",
+  "timestamp": "2026-05-30T13:24:12.687181",
   "files_scanned": 35,
   "pylint": {
     "score": 0.0,
     "pass": false,
     "threshold": 7.0,
-    "issue_count": 776,
+    "issue_count": 781,
     "by_type": {
-      "convention": 277,
-      "warning": 321,
+      "convention": 278,
+      "warning": 325,
       "refactor": 172,
       "error": 6
     },
@@ -77,8 +77,8 @@
     ]
   },
   "flake8": {
-    "total_issues": 1397,
-    "errors": 1329,
+    "total_issues": 1419,
+    "errors": 1351,
     "warnings": 0,
     "pass": false,
     "top_issues": [
@@ -167,6 +167,7 @@
     "flake8_pass": false,
     "radon_pass": false,
     "overall_pass": false,
+    "overall": "WARN",
     "pylint_score": 0.0
   }
 }

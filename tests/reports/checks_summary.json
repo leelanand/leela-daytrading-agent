@@ -1,0 +1,8 @@
+﻿{
+    "quick":  false,
+    "agent":  "both",
+    "timestamp":  "2026-05-30T13:22:38",
+    "failures":  2,
+    "elapsed_s":  125,
+    "status":  "FAILURES_FOUND"
+}
