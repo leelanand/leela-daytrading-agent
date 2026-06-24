@@ -1,7 +1,7 @@
 {
   "test_id": "ALPA_UNIT_PHASE1",
   "test_name": "Alpaca Phase 1 unit tests -- scanner logic and gate bypasses",
-  "timestamp": "2026-06-13T10:18:23.339451+00:00",
+  "timestamp": "2026-06-24T14:05:37.331336+00:00",
   "status": "PASS",
   "cases_run": 98,
   "cases_passed": 98,

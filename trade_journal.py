@@ -2,11 +2,13 @@
 Enhanced trade journal for detailed backtest/analysis.
 
 Captures:
-- Score vs outcome
-- Setup type and regime at entry
+- Score vs outcome with mechanism-based tracking
+- Setup type, regime, AND mechanism (edge type)
 - MAE (maximum adverse excursion) during holding
-- Realistic spread/slippage costs
+- Realistic spread/slippage costs on both sides
 - Entry/exit prices with cost modeling
+- Mechanism preconditions and validation
+- Repair audit trail (ops_agent mutations logged)
 """
 import sqlite3
 from datetime import datetime
@@ -15,7 +17,7 @@ from config import DB_PATH
 
 
 def init_trade_journal():
-    """Extend schema with detailed trade metrics for backtest analysis."""
+    """Expand schema with mechanism tracking, repair audit, and re-check logging."""
     con = sqlite3.connect(DB_PATH)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=30000")
@@ -42,16 +44,34 @@ def init_trade_journal():
             claude_score        INTEGER,
             local_score         INTEGER,
             score_used          INTEGER,  -- which was actually used
-            setup_type          TEXT,     -- ORB, gap_and_go, pullback, news_momentum
+            score_confidence    REAL,     -- 0-1: confidence in this score
+            setup_type          TEXT,     -- ORB, gap_and_go, pullback, news_momentum, etc.
             regime              TEXT,     -- TRENDING_UP, CHOPPY, LOW_VOLUME, HIGH_VOL
+
+            -- MECHANISM TRACKING (Phase 1 change)
+            mechanism           TEXT,     -- momentum_arbitrage, pead, reconstitution, forced_selling
+            counterparty        TEXT,     -- who is on the losing side structurally?
+            mechanism_confidence REAL,    -- 0-1: how confident mechanism is valid right now
+            mechanism_precondition TEXT, -- what must still be true? (orb_window_open, post_earnings_unannounced, etc.)
+            mechanism_precondition_valid BOOLEAN, -- validated at execution time
+
             atr_at_entry        REAL,
-            atr_stop_pct        REAL,     -- ATR * multiplier to set stop
+            atr_stop_pct        REAL,    -- ATR * multiplier to set stop
 
             -- Risk/reward parameters
-            account_risk_pct    REAL,     -- e.g., 0.01 = 1% portfolio risk
+            account_risk_pct    REAL,    -- e.g., 0.01 = 1% portfolio risk
             stop_price          REAL,
             target_price        REAL,
-            intended_r_r        REAL,     -- intended risk:reward ratio
+            intended_r_r        REAL,    -- intended risk:reward ratio
+
+            -- EXECUTION-TIME RE-CHECKS (Phase 5 change)
+            spread_at_prescan_pct   REAL,  -- spread % when candidate was scored
+            spread_at_execution_pct REAL,  -- spread % when order was placed
+            volume_at_prescan       INTEGER,
+            volume_at_execution     INTEGER,
+            cost_survival_check     BOOLEAN, -- passed non-negotiable #1?
+            liquidity_check         BOOLEAN, -- passed non-negotiable #2?
+            precondition_check      BOOLEAN, -- passed non-negotiable #4?
 
             -- Exit details
             exit_price          REAL NOT NULL,
@@ -60,26 +80,45 @@ def init_trade_journal():
             exit_spread_pct     REAL,
             exit_slippage_pct   REAL,
             effective_exit_px   REAL,
-            exit_reason         TEXT,     -- TP_HIT, SL_HIT, TIME_EXIT, EOD_CLOSE, MANUAL, etc.
+            exit_reason         TEXT,     -- TP_HIT, SL_HIT, TIME_EXIT, EOD_CLOSE, MANUAL, REJECTED_AT_EXECUTION, etc.
 
             -- Trade metrics
             mae_pct             REAL,     -- max adverse excursion % from entry
             mae_price           REAL,
             realized_pnl        REAL,
             realized_pnl_pct    REAL,
-            realized_pnl_pre_cost  REAL,  -- P&L before spread/slippage costs
+            realized_pnl_pre_cost   REAL,  -- P&L before spread/slippage costs
             realized_cost_total REAL,     -- entry_spread + entry_slippage + exit_spread + exit_slippage
             holding_minutes     INTEGER,
 
             -- Outcome classification
-            outcome             TEXT,     -- WIN, LOSS, BREAKEVEN
+            outcome             TEXT,     -- WIN, LOSS, BREAKEVEN, REJECTED_AT_EXECUTION
+
+            -- REPAIR AUDIT TRAIL (Phase 4 change)
+            repair_actions      TEXT,     -- JSON array of {action, reason, timestamp, agent, old_val, new_val}
+            repairs_count       INTEGER,  -- how many times was this trade repaired?
 
             UNIQUE(date, symbol, ts_entry)
         )
     """)
 
-    # Intrabar OHLC snapshots for MAE calculation (optional, heavy logging)
-    # Can be purged after session-end analysis
+    # Repair audit log for every mutation
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS repair_audit (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_id        INTEGER NOT NULL,
+            ts              TIMESTAMP,
+            agent           TEXT,       -- which agent made the repair? (ops_agent, executor, etc.)
+            action          TEXT,       -- bracket_adjust, fill_retry, fill_backfill, order_modify
+            reason          TEXT,       -- why? (fill_timeout_retry, missed_fill, slippage_protection, etc.)
+            old_value       TEXT,       -- JSON: what changed? {field: old_val}
+            new_value       TEXT,       -- JSON: {field: new_val}
+            success         BOOLEAN,    -- did this repair succeed?
+            FOREIGN KEY(trade_id) REFERENCES trade_journal(id)
+        )
+    """)
+
+    # Intrabar OHLC snapshots for MAE calculation
     con.execute("""
         CREATE TABLE IF NOT EXISTS intrabar_snapshot (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,16 +142,23 @@ def log_entry(
     entry_ask: float,
     claude_score: int | None,
     local_score: int | None,
-    setup_type: str,
-    regime: str,
-    atr_at_entry: float,
-    atr_stop_pct: float,
-    account_risk_pct: float,
-    stop_price: float,
-    target_price: float,
-    intended_r_r: float,
+    score_confidence: float = 0.0,
+    setup_type: str = "UNKNOWN",
+    regime: str = "UNKNOWN",
+    mechanism: str = "unknown",
+    counterparty: str = "unknown",
+    mechanism_confidence: float = 0.5,
+    mechanism_precondition: str = "none",
+    atr_at_entry: float = 0.0,
+    atr_stop_pct: float = 0.0,
+    account_risk_pct: float = 0.01,
+    stop_price: float = 0.0,
+    target_price: float = 0.0,
+    intended_r_r: float = 0.0,
     entry_spread_pct: float = 0.0,
     entry_slippage_pct: float = 0.0,
+    spread_at_prescan_pct: float = 0.0,
+    volume_at_prescan: int = 0,
 ) -> int:
     """Log a trade entry. Returns trade_id for later exit logging."""
     con = sqlite3.connect(DB_PATH)
@@ -127,19 +173,25 @@ def log_entry(
             date, ts_entry, symbol,
             entry_price, entry_qty, entry_bid, entry_ask,
             entry_spread_pct, entry_slippage_pct, effective_entry_px,
-            claude_score, local_score, score_used,
-            setup_type, regime, atr_at_entry, atr_stop_pct,
-            account_risk_pct, stop_price, target_price, intended_r_r
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            claude_score, local_score, score_used, score_confidence,
+            setup_type, regime,
+            mechanism, counterparty, mechanism_confidence, mechanism_precondition,
+            atr_at_entry, atr_stop_pct,
+            account_risk_pct, stop_price, target_price, intended_r_r,
+            spread_at_prescan_pct, volume_at_prescan
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         datetime.utcnow().date().isoformat(),
         now,
         symbol,
         entry_price, entry_qty, entry_bid, entry_ask,
         entry_spread_pct, entry_slippage_pct, effective_entry_px,
-        claude_score, local_score, score_used,
-        setup_type, regime, atr_at_entry, atr_stop_pct,
-        account_risk_pct, stop_price, target_price, intended_r_r
+        claude_score, local_score, score_used, score_confidence,
+        setup_type, regime,
+        mechanism, counterparty, mechanism_confidence, mechanism_precondition,
+        atr_at_entry, atr_stop_pct,
+        account_risk_pct, stop_price, target_price, intended_r_r,
+        spread_at_prescan_pct, volume_at_prescan
     ))
     trade_id = cursor.lastrowid
     con.commit()
@@ -158,6 +210,11 @@ def log_exit(
     holding_minutes: int,
     exit_spread_pct: float = 0.0,
     exit_slippage_pct: float = 0.0,
+    spread_at_execution_pct: float = 0.0,
+    volume_at_execution: int = 0,
+    cost_survival_check: bool = True,
+    liquidity_check: bool = True,
+    precondition_check: bool = True,
 ):
     """Log a trade exit and compute realized P&L with costs."""
     con = sqlite3.connect(DB_PATH)
@@ -166,7 +223,8 @@ def log_exit(
     # Fetch entry details
     row = con.execute("""
         SELECT entry_price, entry_qty, effective_entry_px,
-               entry_spread_pct, entry_slippage_pct, stop_price, target_price
+               entry_spread_pct, entry_slippage_pct, stop_price, target_price,
+               spread_at_prescan_pct, volume_at_prescan
         FROM trade_journal WHERE id = ?
     """, (trade_id,)).fetchone()
 
@@ -174,7 +232,8 @@ def log_exit(
         con.close()
         return
 
-    entry_price, entry_qty, effective_entry_px, entry_spread_pct, entry_slippage_pct, stop_px, target_px = row
+    (entry_price, entry_qty, effective_entry_px, entry_spread_pct,
+     entry_slippage_pct, stop_px, target_px, spread_at_prescan, vol_at_prescan) = row
 
     effective_exit_px = exit_price * (1 - exit_slippage_pct) * (1 - exit_spread_pct / 2)
 
@@ -190,7 +249,9 @@ def log_exit(
     realized_pnl_pct = realized_pnl / (effective_entry_px * entry_qty) if effective_entry_px * entry_qty > 0 else 0
 
     # Classify outcome
-    if realized_pnl > 0.5:
+    if exit_reason == "REJECTED_AT_EXECUTION":
+        outcome = "REJECTED_AT_EXECUTION"
+    elif realized_pnl > 0.5:
         outcome = "WIN"
     elif realized_pnl < -0.5:
         outcome = "LOSS"
@@ -215,7 +276,12 @@ def log_exit(
             realized_pnl_pct = ?,
             realized_pnl_pre_cost = ?,
             realized_cost_total = ?,
-            outcome = ?
+            outcome = ?,
+            spread_at_execution_pct = ?,
+            volume_at_execution = ?,
+            cost_survival_check = ?,
+            liquidity_check = ?,
+            precondition_check = ?
         WHERE id = ?
     """, (
         now,
@@ -227,8 +293,45 @@ def log_exit(
         realized_pnl, realized_pnl_pct,
         realized_pnl_pre_cost, realized_cost_total,
         outcome,
+        spread_at_execution_pct, volume_at_execution,
+        cost_survival_check, liquidity_check, precondition_check,
         trade_id
     ))
+    con.commit()
+    con.close()
+
+
+def log_repair(
+    trade_id: int,
+    agent: str,
+    action: str,
+    reason: str,
+    old_value: dict,
+    new_value: dict,
+    success: bool = True,
+):
+    """Log a repair action (ops_agent mutation) to audit trail."""
+    import json
+    con = sqlite3.connect(DB_PATH)
+    con.execute("PRAGMA busy_timeout=30000")
+
+    now = datetime.utcnow().isoformat()
+    con.execute("""
+        INSERT INTO repair_audit (
+            trade_id, ts, agent, action, reason, old_value, new_value, success
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        trade_id, now, agent, action, reason,
+        json.dumps(old_value), json.dumps(new_value), success
+    ))
+
+    # Also increment repairs_count and append to repair_actions
+    con.execute("""
+        UPDATE trade_journal SET
+            repairs_count = COALESCE(repairs_count, 0) + 1
+        WHERE id = ?
+    """, (trade_id,))
+
     con.commit()
     con.close()
 

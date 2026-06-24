@@ -1,14 +1,12 @@
 {
   "agent": "alpaca",
-  "date": "2026-06-13",
-  "timestamp": "2026-06-13T06:18:23.871980-04:00",
-  "status": "TRADING_BLOCKED",
-  "p0_passed": 26,
-  "p0_failed": 1,
+  "date": "2026-06-24",
+  "timestamp": "2026-06-24T10:05:37.520670-04:00",
+  "status": "TRADING_ALLOWED",
+  "p0_passed": 27,
+  "p0_failed": 0,
   "warnings": 1,
-  "blockers": [
-    "not_weekend: weekday=5"
-  ],
+  "blockers": [],
   "warn_list": [
     "score_drift"
   ]
