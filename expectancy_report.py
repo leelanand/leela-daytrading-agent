@@ -3,14 +3,17 @@ Expectancy analysis and reporting.
 
 Analyzes trade outcomes by:
 - Overall (all trades)
-- By setup type (ORB, gap_and_go, pullback, news_momentum)
+- By mechanism (momentum_arbitrage, pead, reconstitution, forced_selling) — PRIMARY
+- By setup type (ORB, gap_and_go, pullback, news_momentum) — WITHIN mechanisms
 - By regime (TRENDING_UP, CHOPPY, LOW_VOLUME, HIGH_VOL)
 - By (setup, regime) pair
-- By scoring method (Claude vs local)
+- By scoring method (Claude vs local) — WITH correlation analysis
 
 Only reports stats for segments with N >= MIN_SAMPLE_SIZE to avoid noise.
+Flags score gate for removal if correlation < 0.1 (doesn't discriminate winners).
 """
 import sqlite3
+import statistics
 from collections import defaultdict
 from pathlib import Path
 from config import DB_PATH
@@ -18,6 +21,7 @@ from config import DB_PATH
 
 MIN_SAMPLE_SIZE = 10  # minimum trades to report stats for a segment
 CONFIDENCE_MIN_SAMPLE = 100  # minimum for confident edge claim
+SCORE_CORRELATION_THRESHOLD = 0.1  # if |r| < this, score doesn't discriminate
 
 
 def _fetch_trades():
@@ -84,6 +88,32 @@ def _calc_metrics(trades: list[dict]) -> dict:
         "has_edge": expectancy_net > 0,
         "confident": n_trades >= CONFIDENCE_MIN_SAMPLE,
     }
+
+
+def _calculate_correlation(x_values: list, y_values: list) -> float:
+    """
+    Calculate Pearson correlation coefficient between two lists.
+    Returns -1 to 1; 0 = no correlation.
+    """
+    if len(x_values) < 3:  # Need at least 3 points
+        return 0.0
+
+    try:
+        mean_x = statistics.mean(x_values)
+        mean_y = statistics.mean(y_values)
+
+        numerator = sum((x_values[i] - mean_x) * (y_values[i] - mean_y) for i in range(len(x_values)))
+        denominator = (
+            (sum((x - mean_x) ** 2 for x in x_values) ** 0.5) *
+            (sum((y - mean_y) ** 2 for y in y_values) ** 0.5)
+        )
+
+        if denominator == 0:
+            return 0.0
+
+        return numerator / denominator
+    except Exception:
+        return 0.0
 
 
 def _format_metrics(metrics: dict, label: str) -> str:
