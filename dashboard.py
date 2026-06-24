@@ -1740,7 +1740,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 if __name__ == "__main__":
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"Dashboard running → http://localhost:{PORT}")
+    print(f"Dashboard running -> http://localhost:{PORT}")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
