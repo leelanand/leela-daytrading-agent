@@ -1,7 +1,7 @@
 """
 BACKTEST FILTER: Historical edge detection for structural edges (Option 2)
 
-Primary signal: 12+ months of historical PEAD + reconstitution
+Primary signal: 12+ months of historical PEAD + reconstitution (LIVE DATA)
 Secondary validation: 1 week of paper trading (execution check)
 
 This is a FILTER, not a confirmation:
@@ -16,14 +16,16 @@ from datetime import datetime
 
 from pead_backtest import backtest_pead, report_pead_backtest
 from recon_backtest import backtest_reconstitution, report_recon_backtest
+from backtest_data_loader import load_all_backtest_data
 
 
 def run_full_backtest(
-    earnings_csv: str = None,
-    rebalances_csv: str = None,
+    lookback_months: int = 12,
 ) -> dict:
     """
-    Run historical backtests on both PEAD and reconstitution.
+    Run historical backtests on both PEAD and reconstitution using LIVE DATA.
+
+    Uses: Finnhub (earnings) + Massive (prices) + Russell (rebalances)
 
     Returns: {
         timestamp: datetime of backtest run,
@@ -41,12 +43,15 @@ def run_full_backtest(
         "recommendation": None,
     }
 
+    # Load real data from live feeds
+    print("\n=== LOADING LIVE DATA ===")
+    earnings_data, rebalance_data = load_all_backtest_data(lookback_months=lookback_months)
+
     # PEAD backtest
     print("\n=== RUNNING PEAD BACKTEST ===")
     try:
-        # TODO: Replace with real CSV path
         pead_result = backtest_pead(
-            earnings_data=[],  # Would load from earnings_csv
+            earnings_data=earnings_data,
             holding_days=5,
             min_surprise_pct=5.0,
         )
@@ -59,9 +64,8 @@ def run_full_backtest(
     # Reconstitution backtest
     print("\n=== RUNNING RECONSTITUTION BACKTEST ===")
     try:
-        # TODO: Replace with real CSV path
         recon_result = backtest_reconstitution(
-            rebalance_data=[],  # Would load from rebalances_csv
+            rebalance_data=rebalance_data,
         )
         results["reconstitution"] = recon_result
         print(report_recon_backtest(recon_result))
