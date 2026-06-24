@@ -1285,7 +1285,7 @@ def _scan_and_trade(paper_mode: bool = False):
             "max_trades": LOW_VOLUME_MAX_TRADES,
             "size_cut":   "50%",
             "mode":       TRADING_MODE,
-        }, **ctx})
+        }, **lv_ctx})
     elif high_vol_mode:
         ctx = get_regime_context()
         hv_min = HIGH_VOL_MIN_SCORE
