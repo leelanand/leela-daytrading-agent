@@ -49,6 +49,7 @@ from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, PAPER_TRADING, TRADING_MODE,
     LIVE_ORDER_EARLIEST_ET, LIVE_ORDER_LATEST_ET,
     MIN_SCORE_TO_TRADE, CHOPPY_MIN_SCORE, WATCHLIST_SCORE, KILL_SWITCH,
+    SWING_SIZE_MULTIPLIER,  # Swing-path position sizing multiplier
     BLOCK_MIDDAY, BLOCK_MIDDAY_START, BLOCK_MIDDAY_END,
     MIN_MOMENTUM_TO_TRADE,
     LOW_VOLUME_MIN_SCORE, LOW_VOLUME_MAX_TRADES,
@@ -79,6 +80,8 @@ from config import (
 from scanner import scan_for_candidates
 from analyst import analyse_candidates
 from executor import place_bracket_order, close_all_positions
+from pead_scanner import scan_pead_candidates  # Swing path: structural edges
+from swing_executor import place_swing_order   # Swing path: multi-day holding
 from risk import (
     can_trade, check_candidate_risk, position_size, open_symbols,
     get_setup_tier, check_volatility_extension, atr_aware_stop_pct,
@@ -1197,6 +1200,28 @@ def _prescan():
         "regime":    regime,
     })
 
+    # ─── SWING-PATH PRESCAN (Option B: separate multi-day structural edges) ───────
+    print("\n   [SWING-PATH] Scanning for structural edges (PEAD, reconstitution, forced-selling)...")
+    try:
+        pead_candidates = scan_pead_candidates(lookback_days=5)
+        if pead_candidates:
+            print(f"   [PEAD] Found {len(pead_candidates)} candidates:")
+            for c in pead_candidates:
+                print(f"     {c['symbol']:6s} surprise={c['surprise_pct']:+.1f}% | "
+                      f"drift_expected={c['expected_drift_pct']:.1f}% | hold {c['holding_period_days']}d | "
+                      f"confidence={c['mechanism_confidence']:.0%}")
+            log_audit("PEAD_PRESCAN", details={
+                "candidates": len(pead_candidates),
+                "symbols": [c["symbol"] for c in pead_candidates],
+            })
+        else:
+            print(f"   [PEAD] No candidates (no earnings surprises >5% in last 5 days)")
+            log_audit("PEAD_PRESCAN", details={"candidates": 0})
+    except Exception as e:
+        print(f"   [PEAD ERROR] {e}")
+        log_audit("PEAD_PRESCAN_ERROR", details={"error": str(e)})
+        pead_candidates = []
+
 
 def _scan_and_trade(paper_mode: bool = False):
     """Load prescan candidates, validate all gates, execute limit orders (or simulate)."""
@@ -2279,6 +2304,92 @@ def _scan_and_trade(paper_mode: bool = False):
         trades_this_scan += 1
 
     log_audit("SCAN_DONE", details={"trades": trades_this_scan, "regime": regime, "candidates": len(candidates)})
+
+    # ─── SWING-PATH EXECUTION (Option B) ─────────────────────────────────────
+    # Execute any swing-path structural edges (PEAD, reconstitution, forced-selling)
+    # independent of intraday path
+    _execute_swing_orders(paper_mode=paper_mode)
+
+
+def _execute_swing_orders(paper_mode: bool = False):
+    """Execute swing-path orders (PEAD, reconstitution, forced-selling).
+
+    Runs independent of intraday execution. Swing candidates scanned at prescan time;
+    this function places orders and logs them to trade_journal with mechanism metadata.
+    """
+    try:
+        pead_candidates = scan_pead_candidates(lookback_days=5)
+        if not pead_candidates:
+            return
+
+        print(f"\n   [SWING-EXECUTE] {len(pead_candidates)} PEAD candidate(s) ready to place")
+
+        for candidate in pead_candidates:
+            symbol = candidate["symbol"]
+
+            # Skip if already in open positions (don't double-trade same symbol)
+            try:
+                open_symbols_set = open_symbols()
+                if symbol in open_symbols_set:
+                    print(f"     {symbol}: already in open positions — skipping")
+                    continue
+            except Exception:
+                pass
+
+            # Get current price for sizing
+            try:
+                from data_provider import get_latest_price
+                current_price = get_latest_price(symbol)
+                if not current_price or current_price <= 0:
+                    print(f"     {symbol}: invalid price — skipping")
+                    continue
+            except Exception as e:
+                print(f"     {symbol}: price lookup failed ({e}) — skipping")
+                continue
+
+            # Dynamic sizing (same account risk logic as intraday)
+            try:
+                from risk import position_size
+                shares = position_size(symbol, current_price, stop_pct=0.015, account_risk_pct=0.01)
+                shares_swing = int(shares * SWING_SIZE_MULTIPLIER)  # 60% of intraday
+
+                if shares_swing < 1:
+                    print(f"     {symbol}: swing size {shares_swing} too small — skipping")
+                    continue
+            except Exception as e:
+                print(f"     {symbol}: sizing failed ({e}) — skipping")
+                continue
+
+            # Place swing order
+            if paper_mode:
+                print(f"     {symbol} x{shares_swing} @ ${current_price:.2f} [PAPER-SWING, not placing]")
+            else:
+                try:
+                    order, trade_id = place_swing_order(
+                        symbol=symbol,
+                        shares=shares_swing,
+                        entry_price=current_price,
+                        candidate=candidate,
+                    )
+                    if order and trade_id:
+                        record_entry(symbol, current_price)
+                        claim_symbol(symbol)
+                        log_audit("SWING_ORDER_PLACED", symbol, {
+                            "trade_id": trade_id,
+                            "mechanism": candidate.get("mechanism"),
+                            "shares": shares_swing,
+                            "holding_period_days": candidate.get("holding_period_days"),
+                        })
+                        print(f"     {symbol}: swing order placed (trade_id={trade_id})")
+                    else:
+                        print(f"     {symbol}: swing entry validation failed")
+                except Exception as e:
+                    print(f"     {symbol}: swing order error: {e}")
+                    log_audit("SWING_ORDER_ERROR", symbol, {"error": str(e)})
+
+    except Exception as e:
+        print(f"   [SWING-EXECUTE ERROR] {e}")
+        log_audit("SWING_EXECUTE_ERROR", details={"error": str(e)})
 
 
 def _report():
