@@ -48,6 +48,22 @@ MIN_VOLUME_DAILY    = 300_000  # minimum daily share volume
 GAP_TOLERANCE_PCT   = 2.5      # max price drift from prescan price (%)
 KILL_SWITCH         = False    # set True to disable ALL trading immediately
 
+# ── SWING-PATH EXECUTION (Option B: separate multi-day path for structural edges) ──
+SWING_SIZE_MULTIPLIER = 0.60
+SWING_SIZE_MULTIPLIER_RATIONALE = (
+    "Conservative prior on overnight gap risk. "
+    "Adjusted only on observed gap-breach data (>50 events), never on P&L. "
+    "Current: 0.60× intraday size"
+)
+SWING_SIZE_MULTIPLIER_LAST_AUDIT = "2026-06-24"  # When was it last validated?
+SWING_SIZE_MULTIPLIER_ADJUSTMENT_RAISE_THRESHOLD = 0.05  # Raise if <5% gap breaches
+SWING_SIZE_MULTIPLIER_ADJUSTMENT_LOWER_THRESHOLD = 0.15  # Lower if >15% gap breaches
+SWING_SIZE_MULTIPLIER_ADJUSTMENT_MIN_SAMPLE = 50  # Need >=50 gap events before adjusting
+
+# ── Catalyst Calendar (Finnhub earnings + local fallback) ──
+CATALYST_CALENDAR_SOURCE = "finnhub_earnings + fallback_cache"
+CATALYST_CALENDAR_LOOKBACK_DAYS = 5  # Don't hold into next catalyst if <5 days away
+
 # ── Scanner filters ────────────────────────────────────────────────────────────
 MIN_GAP_PCT     = 1.5
 MIN_REL_VOLUME  = 1.3

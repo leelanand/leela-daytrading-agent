@@ -98,6 +98,11 @@ def init_trade_journal():
             repair_actions      TEXT,     -- JSON array of {action, reason, timestamp, agent, old_val, new_val}
             repairs_count       INTEGER,  -- how many times was this trade repaired?
 
+            -- SWING-PATH OVERNIGHT GAP LOGGING (Option B)
+            overnight_holds_count       INTEGER,  -- how many nights was this position held?
+            gap_events                  TEXT,     -- JSON array: [{date, close_prev, open_price, gap_pct, stop_price, gap_through_stop, slippage_vs_stop}]
+            realized_overnight_slippage REAL,     -- total $ or % slippage from all gap events
+
             UNIQUE(date, symbol, ts_entry)
         )
     """)

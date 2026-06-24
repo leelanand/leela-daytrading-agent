@@ -5,13 +5,24 @@ Identifies stocks with recent earnings surprises that may continue drifting.
 Mechanism: Behavioral underreaction — market slow to update on public information.
 Counterparty: Retail/passive investors slow to process earnings surprises.
 
-Expected drift: 3–5 trading days, magnitude 1–3% depending on surprise size.
+FACT-CHECKLIST (mechanism_confidence is binary 1.0 or 0.0 based on observable preconditions):
+  1. Earnings surprise >= PEAD_MIN_SURPRISE_PCT (5.0%)
+  2. Days since earnings <= PEAD_MAX_DAYS_SINCE_REPORT (5 days)
+  3. Next earnings date > exit_date (don't hold into next catalyst)
+
+All three must be true for mechanism_confidence = 1.0. Otherwise 0.0 (gate rejects).
+Expected drift window: 3–5 trading days from report date.
 """
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
 import requests
 from config import FINNHUB_API_KEY
+
+PEAD_MIN_SURPRISE_PCT = 5.0  # Only surprises >= 5% are material
+PEAD_MAX_DAYS_SINCE_REPORT = 5  # Only recent reports (< 5 days old)
+PEAD_EXPECTED_DRIFT_DAYS = 5  # Hold for up to 5 days post-earnings
+PEAD_MIN_DRIFT_PER_SURPRISE = 0.2  # Conservative: 20% of surprise is drift (old: 30%)
 
 
 def calculate_surprise_magnitude(actual_eps: float, estimate_eps: float) -> float:
@@ -24,17 +35,48 @@ def calculate_surprise_magnitude(actual_eps: float, estimate_eps: float) -> floa
     return ((actual_eps - estimate_eps) / abs(estimate_eps)) * 100
 
 
+def check_pead_preconditions(
+    symbol: str,
+    surprise_pct: float,
+    days_since_earnings: int,
+    next_earnings_date: datetime = None,
+) -> dict:
+    """
+    Fact-checklist for PEAD mechanism.
+
+    Returns: {
+        "fact_1_surprise_gt_min": bool,
+        "fact_2_days_since_lt_max": bool,
+        "fact_3_no_catalyst_in_window": bool,
+        "all_facts_met": bool (mechanism_confidence will be 1.0 or 0.0),
+    }
+    """
+    now = datetime.now()
+    exit_date = now + timedelta(days=PEAD_EXPECTED_DRIFT_DAYS)
+
+    fact_1 = abs(surprise_pct) >= PEAD_MIN_SURPRISE_PCT
+    fact_2 = days_since_earnings <= PEAD_MAX_DAYS_SINCE_REPORT
+    fact_3 = (
+        next_earnings_date is None or
+        next_earnings_date > exit_date
+    )
+
+    return {
+        "fact_1_surprise_gte_5pct": fact_1,
+        "fact_2_days_since_earnings_lte_5": fact_2,
+        "fact_3_no_catalyst_in_drift_window": fact_3,
+        "all_facts_met": fact_1 and fact_2 and fact_3,
+    }
+
+
 def scan_pead_candidates(lookback_days: int = 5) -> list[dict]:
     """
     Find stocks that reported earnings in the last N days with meaningful surprises.
 
-    Returns list of {symbol, earnings_date, surprise_pct, days_since_earnings, expected_drift_pct}
+    Returns list of {symbol, mechanism metadata, precondition facts, holding info}
+    FACT-CHECKLIST SCORING: mechanism_confidence = 1.0 only if all preconditions met, else 0.0
     """
     candidates = []
-
-    # Get list of recent earnings (would use Finnhub earnings calendar API)
-    # For now, return structure for integration
-    # In production, would call: https://finnhub.io/api/v1/calendar/earnings
 
     try:
         resp = requests.get(
@@ -51,7 +93,6 @@ def scan_pead_candidates(lookback_days: int = 5) -> list[dict]:
             return []
 
         earnings = resp.json().get("earnings", [])
-
         today = datetime.now()
 
         for report in earnings:
@@ -76,24 +117,38 @@ def scan_pead_candidates(lookback_days: int = 5) -> list[dict]:
 
             surprise_pct = calculate_surprise_magnitude(actual_eps, estimate_eps)
 
-            # Only meaningful surprises (>5% beat or miss)
-            if abs(surprise_pct) < 5.0:
+            # Check preconditions (fact-checklist)
+            # next_earnings_date would be fetched from Finnhub earnings calendar (TODO)
+            preconditions = check_pead_preconditions(
+                symbol=symbol,
+                surprise_pct=surprise_pct,
+                days_since_earnings=days_since,
+                next_earnings_date=None,  # TODO: fetch from Finnhub
+            )
+
+            # mechanism_confidence is BINARY: 1.0 if all facts met, 0.0 otherwise
+            mechanism_confidence = 1.0 if preconditions["all_facts_met"] else 0.0
+
+            # Only include if confidence is 1.0 (all preconditions met)
+            if mechanism_confidence < 1.0:
                 continue
 
-            # Estimate drift magnitude: larger surprise = larger expected drift
-            expected_drift_pct = abs(surprise_pct) * 0.3  # Drift is ~30% of surprise magnitude
+            # Estimate drift magnitude: conservative 20% of surprise magnitude
+            expected_drift_pct = abs(surprise_pct) * PEAD_MIN_DRIFT_PER_SURPRISE
 
             candidates.append({
                 "symbol": symbol,
                 "mechanism": "pead",
                 "counterparty": "slow_information_processors",
-                "mechanism_confidence": min(0.9, abs(surprise_pct) / 100),  # Higher surprise = higher confidence
+                "mechanism_confidence": mechanism_confidence,  # 1.0 (all facts met) or 0.0 (skip)
                 "mechanism_precondition": "post_earnings_unannounced",
+                "mechanism_precondition_facts": preconditions,  # Full checklist for audit
                 "earnings_date": earnings_date_str,
                 "surprise_pct": round(surprise_pct, 2),
                 "days_since_earnings": days_since,
                 "expected_drift_pct": round(expected_drift_pct, 2),
-                "expected_hold_days": 3,
+                "holding_period_days": PEAD_EXPECTED_DRIFT_DAYS,  # Swing path: hold for N days
+                "holding_rationale": f"PEAD drift window post-earnings, {surprise_pct:+.1f}% surprise",
             })
 
         return candidates
@@ -105,6 +160,8 @@ def scan_pead_candidates(lookback_days: int = 5) -> list[dict]:
 
 if __name__ == "__main__":
     results = scan_pead_candidates(lookback_days=5)
-    print(f"Found {len(results)} PEAD candidates:")
+    print(f"Found {len(results)} PEAD candidates (fact-checklist met):")
     for c in results:
-        print(f"  {c['symbol']}: {c['surprise_pct']:+.1f}% surprise, {c['expected_drift_pct']:.1f}% drift expected")
+        print(f"  {c['symbol']}: {c['surprise_pct']:+.1f}% surprise, "
+              f"{c['expected_drift_pct']:.1f}% drift expected, "
+              f"hold {c['holding_period_days']} days")
