@@ -12,6 +12,8 @@ from config import (
     MAX_SPREAD_PCT,
 )
 from logger import log_execution
+from trade_journal import log_entry, log_exit
+from cost_modeling import estimate_spread_pct, estimate_slippage_pct
 
 
 def _validate_prices(symbol: str, entry: float, bid: float, ask: float,
@@ -54,7 +56,25 @@ def place_bracket_order(
     score: int = 0, size_pct: float = 0.0, sizing_note: str = "",
     stop_pct: float | None = None,
     take_profit_pct: float | None = None,
-):
+    claude_score: int | None = None,
+    local_score: int | None = None,
+    setup_type: str = "UNKNOWN",
+    regime: str = "UNKNOWN",
+    atr_at_entry: float = 0.0,
+    atr_stop_pct: float = 0.0,
+    account_risk_pct: float = 0.01,
+    daily_volume: int = 1_000_000,
+    volatility_20d: float = 0.02,
+    volatility_1d: float = 0.015,
+    volume_ratio: float = 1.0,
+    entry_bid: float | None = None,
+    entry_ask: float | None = None,
+) -> tuple:
+    """
+    Place bracket order and log to trade journal with cost modeling.
+
+    Returns: (order, trade_id) for later exit logging.
+    """
     sp     = stop_pct        if stop_pct        is not None else STOP_LOSS_PCT
     tp     = take_profit_pct if take_profit_pct is not None else TAKE_PROFIT_PCT
     # Anchor stop/target to the ENTRY price (the limit we'll actually pay), not the raw
@@ -105,7 +125,73 @@ def place_bracket_order(
         shares=shares, order_type=order_type,
         score=score, size_pct=size_pct, sizing_note=sizing_note,
     )
-    return order
+
+    # Log to trade journal with realistic costs
+    if entry_bid is None:
+        entry_bid = price * 0.999  # estimate
+    if entry_ask is None:
+        entry_ask = price * 1.001  # estimate
+
+    entry_spread_pct = estimate_spread_pct(price, daily_volume, volatility_20d)
+    entry_slippage_pct = estimate_slippage_pct("BUY", volatility_1d, volume_ratio)
+    intended_r_r = tp / sp if sp > 0 else 0
+
+    trade_id = log_entry(
+        symbol=symbol,
+        entry_price=price,
+        entry_qty=shares,
+        entry_bid=entry_bid,
+        entry_ask=entry_ask,
+        claude_score=claude_score,
+        local_score=local_score,
+        setup_type=setup_type,
+        regime=regime,
+        atr_at_entry=atr_at_entry,
+        atr_stop_pct=atr_stop_pct,
+        account_risk_pct=account_risk_pct,
+        stop_price=stop,
+        target_price=target,
+        intended_r_r=intended_r_r,
+        entry_spread_pct=entry_spread_pct,
+        entry_slippage_pct=entry_slippage_pct,
+    )
+
+    return order, trade_id
+
+
+def log_trade_exit(
+    trade_id: int,
+    exit_price: float,
+    exit_reason: str,
+    mae_pct: float = 0.0,
+    mae_price: float = 0.0,
+    holding_minutes: int = 0,
+    exit_bid: float | None = None,
+    exit_ask: float | None = None,
+    daily_volume: int = 1_000_000,
+    volatility_1d: float = 0.015,
+):
+    """Log a trade exit with realistic exit costs."""
+    if exit_bid is None:
+        exit_bid = exit_price * 0.999
+    if exit_ask is None:
+        exit_ask = exit_price * 1.001
+
+    exit_spread_pct = estimate_spread_pct(exit_price, daily_volume, 0.02)
+    exit_slippage_pct = estimate_slippage_pct("SELL", volatility_1d, 1.0)
+
+    log_exit(
+        trade_id=trade_id,
+        exit_price=exit_price,
+        exit_bid=exit_bid,
+        exit_ask=exit_ask,
+        exit_reason=exit_reason,
+        mae_pct=mae_pct,
+        mae_price=mae_price,
+        holding_minutes=holding_minutes,
+        exit_spread_pct=exit_spread_pct,
+        exit_slippage_pct=exit_slippage_pct,
+    )
 
 
 def close_all_positions():

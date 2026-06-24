@@ -2315,6 +2315,8 @@ def _report():
 
 if __name__ == "__main__":
     init_db()
+    from trade_journal import init_trade_journal
+    init_trade_journal()
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--research",    action="store_true", help="Pre-market research — fundamentals + Claude brief (8:30am ET)")
@@ -2331,6 +2333,7 @@ if __name__ == "__main__":
     parser.add_argument("--verify",        action="store_true", help="Emergency flatness check — close anything still open (3:55pm ET)")
     parser.add_argument("--report",        action="store_true", help="Basic P&L report (4:15pm ET)")
     parser.add_argument("--performance",   action="store_true", help="Full analytics dashboard (4:30pm ET)")
+    parser.add_argument("--expectancy",    action="store_true", help="Expectancy analysis — edge by setup, regime, and score method (backtest harness)")
     parser.add_argument("--feedreport",    action="store_true", help="Feed quality report — provider health, mismatches, rejections")
     parser.add_argument("--status",        action="store_true", help="Current positions and P&L (any time)")
     args = parser.parse_args()
@@ -2481,6 +2484,11 @@ if __name__ == "__main__":
         feed_rpt = generate_feed_quality_report()
         print_feed_quality_report(feed_rpt)
 
+    elif args.expectancy:
+        _header("EXPECTANCY ANALYSIS — Backtest Harness")
+        from expectancy_report import generate_report
+        generate_report()
+
     elif args.feedreport:
         _header("FEED QUALITY REPORT")
         feed_rpt = generate_feed_quality_report()
@@ -2494,4 +2502,4 @@ if __name__ == "__main__":
         print("Usage: python agent.py "
               "--research | --precheck | --prescan | --scan | --continuous | "
               "--paper | --monitor | --monitor-loop | --cutoff | --close | "
-              "--verify | --report | --performance | --feedreport | --status")
+              "--verify | --report | --performance | --expectancy | --feedreport | --status")
